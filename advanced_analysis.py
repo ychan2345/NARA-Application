@@ -9,7 +9,8 @@ import sys
 import re
 import base64
 import io
-from openai import OpenAI, AzureOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 import pandas as pd
 import numpy as np
 from scipy import stats
@@ -21,23 +22,29 @@ from datetime import datetime
 
 
 def get_openai_client():
-    """Get OpenAI client using available configuration (Azure or regular OpenAI)"""
+    """Get LangChain ChatOpenAI client using available configuration (Azure or regular OpenAI)"""
     # Check for Azure OpenAI configuration first
     if all([
         os.environ.get("AZURE_OPENAI_API_KEY"),
         os.environ.get("AZURE_OPENAI_ENDPOINT"),
         os.environ.get("AZURE_OPENAI_API_VERSION")
     ]):
-        from openai import AzureOpenAI
-        return AzureOpenAI(
+        return AzureChatOpenAI(
             api_key=os.environ.get("AZURE_OPENAI_API_KEY"),
             api_version=os.environ.get("AZURE_OPENAI_API_VERSION"),
-            azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT")
+            azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
+            deployment_name=os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o"),
+            model=os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o"),
+            temperature=0.1
         )
     
     # Fallback to regular OpenAI
     elif os.environ.get("OPENAI_API_KEY"):
-        return OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        return ChatOpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            model="gpt-4o",
+            temperature=0.1
+        )
     
     else:
         raise ValueError("No valid OpenAI configuration found")
@@ -79,13 +86,10 @@ Please review the insights and check if:
 
 If the insights are accurate, return them unchanged. If there are inaccuracies, provide a corrected version that uses only the verified metrics and calculations."""
 
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": check_prompt}],
-            temperature=0.1
-        )
+        messages = [HumanMessage(content=check_prompt)]
+        response = client.invoke(messages)
         
-        return response.choices[0].message.content or insights_text
+        return response.content or insights_text
         
     except Exception as e:
         print(f"Self-check error: {e}")
@@ -189,13 +193,10 @@ Rules:
         try:
             client = get_openai_client()
             # the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-            response = client.chat.completions.create(
-                model=get_model_name(),
-                messages=[{"role": "user", "content": fix_prompt}],
-                temperature=0.0
-            )
+            messages = [HumanMessage(content=fix_prompt)]
+            response = client.invoke(messages)
             
-            fixer = response.choices[0].message.content
+            fixer = response.content
             if fixer and "```" in fixer:
                 code_blocks = fixer.split("```")
                 if len(code_blocks) >= 3:
@@ -288,13 +289,10 @@ Metrics:
         
         client = get_openai_client()
         # the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[{"role": "user", "content": check_prompt}],
-            temperature=0.1
-        )
+        messages = [HumanMessage(content=check_prompt)]
+        response = client.invoke(messages)
         
-        resp = response.choices[0].message.content
+        resp = response.content
         
         # Heuristic: if it contains "rewrite" or looks revised, use the response
         if resp and ("rewrite" in resp.lower() or "revised" in resp.lower()):
@@ -327,24 +325,21 @@ Focus on what a business executive would find valuable and actionable. Use simpl
 
         client = get_openai_client()
         # the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": vision_prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{img_base64}"}
-                        }
-                    ]
-                }
-            ],
-            max_tokens=500
-        )
+        # For vision with LangChain, we need to use HumanMessage with image content
+        messages = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": vision_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{img_base64}"}
+                    }
+                ]
+            )
+        ]
+        response = client.invoke(messages)
 
-        return response.choices[0].message.content
+        return response.content
 
     except Exception as e:
         # Fallback to chart structure analysis
@@ -395,13 +390,10 @@ Focus on executive-level insights using simple, professional language.'''
 
             client = get_openai_client()
             # the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-            response = client.chat.completions.create(
-                model=get_model_name(),
-                messages=[{"role": "user", "content": structure_prompt}],
-                temperature=0.1
-            )
+            messages = [HumanMessage(content=structure_prompt)]
+            response = client.invoke(messages)
 
-            return response.choices[0].message.content
+            return response.content
 
     except Exception as e:
         return f"Chart analysis unavailable: {str(e)}"
@@ -428,13 +420,10 @@ Format as bullet points starting with •'''
 
         client = get_openai_client()
         # the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[{"role": "user", "content": summary_prompt}],
-            temperature=0.1
-        )
+        messages = [HumanMessage(content=summary_prompt)]
+        response = client.invoke(messages)
 
-        return response.choices[0].message.content
+        return response.content
 
     except Exception as e:
         st.warning(f"Could not generate narrative summary: {e}")
@@ -497,13 +486,10 @@ Format as bullet points starting with • or as a brief executive summary.'''
 
             client = get_openai_client()
             # the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-            response = client.chat.completions.create(
-                model=get_model_name(),
-                messages=[{"role": "user", "content": narrative_prompt}],
-                temperature=0.1
-            )
+            messages = [HumanMessage(content=narrative_prompt)]
+            response = client.invoke(messages)
 
-            return response.choices[0].message.content
+            return response.content
 
     except Exception as e:
         st.warning(f"Could not generate narrative: {e}")
