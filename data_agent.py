@@ -1,6 +1,7 @@
 import os
 import json
-from openai import OpenAI, AzureOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 import pandas as pd
 from advanced_analysis import (
     compute_advanced_metrics, 
@@ -14,7 +15,7 @@ class DataAgent:
         self.client, self.model = self._initialize_openai_client()
     
     def _initialize_openai_client(self):
-        """Initialize OpenAI client based on available environment variables"""
+        """Initialize LangChain ChatOpenAI client based on available environment variables"""
         # Check for Azure OpenAI configuration first
         if all([
             os.getenv("AZURE_OPENAI_API_KEY"),
@@ -24,23 +25,27 @@ class DataAgent:
             endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
             deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
             api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-            print(f"Using Azure OpenAI - Endpoint: {endpoint}, Deployment: {deployment}, API Version: {api_version}")
+            print(f"Using Azure OpenAI via LangChain - Endpoint: {endpoint}, Deployment: {deployment}, API Version: {api_version}")
             
-            client = AzureOpenAI(
+            client = AzureChatOpenAI(
                 api_key=os.getenv("AZURE_OPENAI_API_KEY"),
                 api_version=api_version,
-                azure_endpoint=endpoint
+                azure_endpoint=endpoint,
+                deployment_name=deployment,
+                model=deployment,
+                temperature=0.1
             )
             return client, deployment
         
         # Fallback to regular OpenAI
         elif os.getenv("OPENAI_API_KEY"):
-            print("Using regular OpenAI configuration")
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-            # the newest OpenAI model is "gpt-4o" which was released May 13, 2024.
-            # do not change this unless explicitly requested by the user
-            model = "gpt-4o"
-            return client, model
+            print("Using regular OpenAI via LangChain configuration")
+            client = ChatOpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                model="gpt-4o",
+                temperature=0.1
+            )
+            return client, "gpt-4o"
         
         else:
             raise ValueError("No valid OpenAI configuration found. Please set either AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_VERSION or OPENAI_API_KEY")
@@ -155,17 +160,13 @@ Generate pandas code to perform this data manipulation:
 """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=1000
-            )
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ]
             
-            code = response.choices[0].message.content
+            response = self.client.invoke(messages)
+            code = response.content
             if code is None:
                 return None
             code = code.strip()
@@ -266,17 +267,13 @@ Generate Python code to perform this data analysis:
 """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=1500
-            )
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ]
             
-            code = response.choices[0].message.content
+            response = self.client.invoke(messages)
+            code = response.content
             if code is None:
                 return None
             code = code.strip()
@@ -393,13 +390,9 @@ IMPORTANT EXAMPLES:
 
 Only respond with one word: insight or code'''
 
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": intent_prompt}],
-                temperature=0.0
-            )
-            
-            content = response.choices[0].message.content
+            messages = [HumanMessage(content=intent_prompt)]
+            response = self.client.invoke(messages)
+            content = response.content
             intent = content.strip().lower() if content else 'code'
             return intent if intent in ['code', 'insight'] else 'code'
             
