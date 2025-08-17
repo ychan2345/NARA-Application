@@ -257,6 +257,8 @@ Respond with only the Python code, no explanations or markdown formatting."""
 Dataset Information:
 {df_info}
 
+NOTE: This dataset has already been pre-filtered and prepared based on previous user instructions. DO NOT apply the same filtering logic again (e.g., if prior steps filtered rows where country='United States', do NOT repeat this).
+
 {context_info}
 
 {categories_info}
@@ -456,6 +458,8 @@ Drawing from your extensive experience, provide a comprehensive analysis that de
 
 Sample data:
 {df.head(3).to_string()}
+
+NOTE: This dataset has already been pre-filtered and prepared based on previous user instructions. DO NOT apply the same filtering logic again (e.g., if prior steps filtered rows where country='United States', do NOT repeat this).
 
 IMPORTANT: I have already performed key calculations under the hood. Use the computed insights above to provide data-driven evidence with specific numbers, correlations, and statistical findings. Reference these exact calculated values in your analysis.
 
