@@ -2,9 +2,77 @@ import streamlit as st
 import pandas as pd
 import io
 import traceback
+import numpy as np
+import re
 from data_agent import DataAgent
 from code_executor import CodeExecutor
 from utils import display_dataframe, create_download_link
+
+def apply_manual_conversion_fallback(df, column_name, target_dtype, sample_data):
+    """
+    Manual fallback conversion for common data type issues when AI fails.
+    """
+    df_copy = df.copy()
+    
+    if target_dtype == 'float64':
+        # Handle currency and numeric data with special characters
+        def clean_numeric(value):
+            if pd.isna(value):
+                return value
+            # Convert to string and remove common formatting
+            value_str = str(value).strip()
+            # Remove currency symbols, commas, spaces
+            cleaned = re.sub(r'[$€£¥,\s%]', '', value_str)
+            # Handle parentheses for negative numbers
+            if cleaned.startswith('(') and cleaned.endswith(')'):
+                cleaned = '-' + cleaned[1:-1]
+            try:
+                return float(cleaned)
+            except:
+                return np.nan
+        
+        df_copy[column_name] = df_copy[column_name].apply(clean_numeric)
+        
+    elif target_dtype == 'int64':
+        # Similar to float but convert to int
+        def clean_integer(value):
+            if pd.isna(value):
+                return value
+            value_str = str(value).strip()
+            cleaned = re.sub(r'[$€£¥,\s%]', '', value_str)
+            if cleaned.startswith('(') and cleaned.endswith(')'):
+                cleaned = '-' + cleaned[1:-1]
+            try:
+                return int(float(cleaned))  # Convert through float first
+            except:
+                return np.nan
+        
+        df_copy[column_name] = df_copy[column_name].apply(clean_integer)
+        
+    elif target_dtype == 'datetime64[ns]':
+        # Handle various date formats
+        df_copy[column_name] = pd.to_datetime(df_copy[column_name], errors='coerce')
+        
+    elif target_dtype == 'bool':
+        # Handle text to boolean conversion
+        def text_to_bool(value):
+            if pd.isna(value):
+                return value
+            value_str = str(value).lower().strip()
+            if value_str in ['true', 't', 'yes', 'y', '1', 'on']:
+                return True
+            elif value_str in ['false', 'f', 'no', 'n', '0', 'off']:
+                return False
+            else:
+                return np.nan
+        
+        df_copy[column_name] = df_copy[column_name].apply(text_to_bool)
+        
+    else:
+        # For other types, try direct conversion
+        df_copy[column_name] = df_copy[column_name].astype(target_dtype)
+    
+    return df_copy
 
 # Initialize session state
 if 'current_phase' not in st.session_state:
@@ -259,9 +327,12 @@ elif st.session_state.current_phase == 'manipulation':
                 )
                 
                 if st.button("Apply Data Type Change"):
+                    df_temp = st.session_state.current_df.copy()
+                    success = False
+                    error_message = ""
+                    
+                    # First try: Default pandas conversion
                     try:
-                        df_temp = st.session_state.current_df.copy()
-                        
                         if new_dtype == 'datetime64[ns]':
                             df_temp[column_to_modify] = pd.to_datetime(df_temp[column_to_modify])
                         elif new_dtype == 'category':
@@ -271,13 +342,88 @@ elif st.session_state.current_phase == 'manipulation':
                         else:
                             df_temp[column_to_modify] = df_temp[column_to_modify].astype(new_dtype)
                         
+                        success = True
+                        
+                    except Exception as default_error:
+                        error_message = str(default_error)
+                        st.warning(f"⚠️ Default conversion failed: {error_message}")
+                        st.info("🤖 Trying AI-powered data type conversion...")
+                        
+                        # Second try: Use GPT to generate custom conversion code
+                        try:
+                            with st.spinner("Generating intelligent conversion code..."):
+                                # Sample some data for context
+                                sample_data = df_temp[column_to_modify].dropna().head(10).tolist()
+                                
+                                conversion_prompt = f"""Generate Python code to convert a pandas DataFrame column from its current data type to {new_dtype} ({dtype_options[new_dtype]}).
+
+Column name: {column_to_modify}
+Current data type: {current_dtype}
+Target data type: {new_dtype}
+Sample values: {sample_data}
+Error from standard conversion: {error_message}
+
+Requirements:
+- Use 'df' as the dataframe variable and '{column_to_modify}' as the column name
+- Handle potential errors and edge cases intelligently
+- Clean/preprocess the data if needed before conversion
+- Use appropriate pandas methods for the conversion
+- Return ONLY the Python code without any markdown formatting or explanations
+- Make sure the code handles the specific error mentioned above
+
+Example approaches based on the error:
+- For currency strings like '$127613': Remove dollar signs, commas, and other non-numeric characters before converting to float
+- For datetime: handle different date formats, clean strings first  
+- For numeric: remove currency symbols ($, €, £), commas, percent signs, and other formatting
+- For boolean: map text values to True/False intelligently
+- For category: handle missing values appropriately
+
+The code should be robust and handle the specific formatting issues shown in the sample data."""
+
+                                generated_code = data_agent.generate_manipulation_code(
+                                    df_temp, 
+                                    conversion_prompt,
+                                    chat_history=[],
+                                    unique_categories={}
+                                )
+                                
+                                if generated_code:
+                                    # Show the generated code for debugging
+                                    with st.expander("🔍 View Generated Conversion Code"):
+                                        st.code(generated_code, language="python")
+                                    
+                                    # Execute the AI-generated conversion code
+                                    result_df = code_executor.execute_manipulation(df_temp, generated_code)
+                                    
+                                    if result_df is not None:
+                                        df_temp = result_df
+                                        success = True
+                                        st.success("✅ AI-powered conversion successful!")
+                                    else:
+                                        st.error("❌ AI-generated code failed to execute properly")
+                                        st.info("💡 The generated code above had execution issues. Trying manual cleanup...")
+                                        
+                                        # Final fallback: Apply common data cleaning patterns based on the data type
+                                        try:
+                                            df_temp = apply_manual_conversion_fallback(df_temp, column_to_modify, new_dtype, sample_data)
+                                            success = True
+                                            st.success("✅ Manual cleanup conversion successful!")
+                                        except Exception as manual_error:
+                                            st.error(f"❌ Manual cleanup also failed: {str(manual_error)}")
+                                else:
+                                    st.error("❌ Could not generate conversion code")
+                                    
+                        except Exception as ai_error:
+                            st.error(f"❌ AI conversion failed: {str(ai_error)}")
+                    
+                    # Apply changes if successful
+                    if success:
                         st.session_state.current_df = df_temp
                         st.session_state.manipulation_history.append(f"Changed {column_to_modify} data type to {new_dtype}")
-                        st.success(f"✅ Changed {column_to_modify} to {dtype_options[new_dtype]}")
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"❌ Error changing data type: {str(e)}")
+                        st.success(f"✅ Successfully changed {column_to_modify} to {dtype_options[new_dtype]}")
+                        #st.rerun()
+                    else:
+                        st.error("❌ Both default and AI-powered conversions failed")
     
     # Show current dataset
     st.subheader("📊 Current Dataset")
@@ -463,13 +609,19 @@ elif st.session_state.current_phase == 'analysis':
     
     # Process analysis if we have a query (either from text input or quick actions)
     if (analysis_query and analysis_query.strip()) or quick_action_clicked:
+        # Ensure we have a valid query string
+        final_query = analysis_query or quick_action_query or ""
+        if not final_query.strip():
+            st.error("No valid query provided")
+            st.stop()
+            
         with st.spinner("🤖 Analyzing with advanced AI capabilities..."):
             try:
                 # Use intelligent routing to determine approach
-                intent = data_agent.route_query_intelligently(analysis_query)
+                intent = data_agent.route_query_intelligently(final_query)
                 
                 # Store last query and intent for feedback system
-                st.session_state.last_query = analysis_query
+                st.session_state.last_query = final_query
                 st.session_state.last_intent = intent
                 
                 if intent == "insight":
@@ -478,7 +630,7 @@ elif st.session_state.current_phase == 'analysis':
                     if st.session_state.approved_df is not None:
                         insights = data_agent.generate_enhanced_insights(
                             st.session_state.approved_df,
-                            analysis_query
+                            final_query
                         )
                     else:
                         insights = "No approved dataset available for analysis."
@@ -494,7 +646,7 @@ elif st.session_state.current_phase == 'analysis':
                         }
                         
                         st.session_state.analysis_history.append({
-                            'query': analysis_query,
+                            'query': final_query,
                             'code': None,
                             'result': analysis_result,
                             'intent': 'insight',
@@ -508,7 +660,7 @@ elif st.session_state.current_phase == 'analysis':
                         # Generate key takeaways
                         try:
                             from advanced_analysis import generate_insight_narrative_summary
-                            summary = generate_insight_narrative_summary(insights, analysis_query)
+                            summary = generate_insight_narrative_summary(insights, final_query)
                             if summary:
                                 st.subheader("🎯 Key Takeaways")
                                 st.write(summary)
@@ -522,14 +674,14 @@ elif st.session_state.current_phase == 'analysis':
                         with cols_fb[0]:
                             if st.button("👍", key="thumbs_up_insight", help="Insight generation was correct"):
                                 try:
-                                    data_agent.save_feedback_decision(analysis_query, "insight", True, None)
+                                    data_agent.save_feedback_decision(final_query, "insight", True, None)
                                     st.toast("Feedback saved ✅")
                                 except Exception as e:
                                     st.error(f"Error saving feedback: {e}")
                         with cols_fb[1]:
                             if st.button("👎", key="thumbs_down_insight", help="Should have generated code instead"):
                                 try:
-                                    data_agent.save_feedback_decision(analysis_query, "insight", False, None)
+                                    data_agent.save_feedback_decision(final_query, "insight", False, None)
                                     st.toast("Feedback saved ✅")
                                 except Exception as e:
                                     st.error(f"Error saving feedback: {e}")
@@ -541,7 +693,7 @@ elif st.session_state.current_phase == 'analysis':
                     st.info("⚙️ Generating and executing analysis code...")
                     generated_code = data_agent.generate_analysis_code(
                         st.session_state.approved_df, 
-                        analysis_query,
+                        final_query,
                         chat_history=st.session_state.chat_history,
                         unique_categories=st.session_state.unique_categories
                     )
@@ -549,7 +701,7 @@ elif st.session_state.current_phase == 'analysis':
                     # Add to chat history
                     st.session_state.chat_history.append({
                         'type': 'analysis', 
-                        'query': analysis_query,
+                        'query': final_query,
                         'timestamp': pd.Timestamp.now()
                     })
                     
@@ -558,13 +710,13 @@ elif st.session_state.current_phase == 'analysis':
                         analysis_result = code_executor.execute_analysis(
                             st.session_state.approved_df, 
                             generated_code,
-                            analysis_query  # Pass query for self-repair
+                            final_query  # Pass query for self-repair
                         )
                         
                         if analysis_result:
                             # Add to history
                             st.session_state.analysis_history.append({
-                                'query': analysis_query,
+                                'query': final_query,
                                 'code': generated_code,
                                 'result': analysis_result,
                                 'intent': 'code',
