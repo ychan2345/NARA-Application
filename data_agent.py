@@ -135,14 +135,16 @@ class DataAgent:
 IMPORTANT RULES:
 1. Only use pandas, numpy, and basic Python operations
 2. The dataframe variable is always called 'df'
-3. Do NOT include 'return' statements - just modify 'df' in place
-4. The modified 'df' will be automatically used as the result
-5. Do not use any file I/O operations
-6. Do not use any dangerous operations like eval(), exec(), or __import__()
-7. Focus on common data manipulation: filtering, grouping, sorting, creating columns, etc.
-8. Include comments explaining the operations
-9. Handle potential errors gracefully
-10. Preserve data types when possible
+3. Always assign your final result back to the variable 'df'. For example: df = df[...] or df['new_col'] = ...
+4. Do NOT create new DataFrame variables like 'filtered_df', 'df_new', or 'output_df'
+5. Do NOT include 'return' statements - just modify 'df' in place
+6. The modified 'df' will be automatically used as the result
+7. Do not use any file I/O operations
+8. Do not use any dangerous operations like eval(), exec(), or __import__()
+9. Focus on common data manipulation: filtering, grouping, sorting, creating columns, etc.
+10. Include comments explaining the operations
+11. Handle potential errors gracefully
+12. Preserve data types when possible
 
 Respond with only the Python code, no explanations or markdown formatting."""
 
@@ -404,106 +406,105 @@ Only respond with one word: insight or code'''
     
     def generate_enhanced_insights(self, df: pd.DataFrame, query: str) -> str:
         """
-        Generate enhanced business insights with computed metrics and self-checking
+        Generate enhanced business insights using fast pre-computed statistics (no code execution)
         """
         try:
-            # Compute advanced metrics
-            computed_metrics = compute_advanced_metrics(df)
-            
-            # Get basic column information
+            # Pre-compute statistics rapidly 
             numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
             categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
             
-            # Build enhanced data summary with computed metrics
-            data_summary = f"""Dataset Overview:
-- Shape: {df.shape[0]} rows, {df.shape[1]} columns
-- Numeric columns: {numeric_cols[:5]}
-- Categorical columns: {categorical_cols[:5]}
-- Missing values: {df.isnull().sum().sum()} total across all columns"""
+            # Build comprehensive analysis summary
+            analysis_summary = f"""COMPLETE DATASET ANALYSIS:
 
-            # Add computed insights to data summary
-            if computed_metrics:
-                data_summary += "\n\nComputed Insights:"
+OVERVIEW:
+- Total Records: {len(df):,} rows
+- Variables: {len(df.columns)} columns
+- Numeric: {len(numeric_cols)} ({', '.join(numeric_cols[:4])}{'...' if len(numeric_cols) > 4 else ''})
+- Categorical: {len(categorical_cols)} ({', '.join(categorical_cols[:3])}{'...' if len(categorical_cols) > 3 else ''})
+- Completeness: {((len(df) * len(df.columns) - df.isnull().sum().sum()) / (len(df) * len(df.columns)) * 100):.1f}% complete"""
 
-                # Add correlation insights
-                if 'correlations' in computed_metrics and computed_metrics['correlations']:
-                    data_summary += "\n- Key Correlations:"
-                    for col1, col2, corr_val in computed_metrics['correlations'][:3]:
-                        strength = "Strong" if abs(corr_val) > 0.7 else "Moderate" if abs(corr_val) > 0.5 else "Weak"
-                        direction = "positive" if corr_val > 0 else "negative"
-                        data_summary += f"\n  • {col1} vs {col2}: {strength} {direction} correlation ({corr_val:.3f})"
-
-                # Add distribution insights
-                for key, value in computed_metrics.items():
-                    if key.endswith('_insights'):
-                        col_name = key.replace('_insights', '')
-                        data_summary += f"\n- {col_name}: Mean={value['mean']}, Median={value['median']}, Std={value['std']}, Outliers={value['outliers_count']}"
-                    elif key.endswith('_distribution'):
-                        col_name = key.replace('_distribution', '')
-                        top_cat = list(value['top_categories'].keys())[0] if value['top_categories'] else "N/A"
-                        data_summary += f"\n- {col_name}: {value['unique_count']} unique values, most common: '{top_cat}'"
-
-            # Add statistical summary for numeric columns
+            # Add statistics for numeric columns (fast pandas operations)
             if numeric_cols:
-                stats_summary = df[numeric_cols[:3]].describe().round(2)
-                data_summary += f"\n\nKey Statistics:\n{stats_summary.to_string()}"
+                try:
+                    # Limit to first 4 numeric columns for performance
+                    key_cols = numeric_cols[:4]
+                    stats_df = df[key_cols].describe().round(2)
+                    analysis_summary += f"\n\nKEY STATISTICS (Full {len(df):,} Records):\n{stats_df.to_string()}"
+                    
+                    # Add correlations if multiple numeric columns
+                    if len(numeric_cols) > 1:
+                        corr_matrix = df[key_cols].corr().round(3)
+                        # Find strongest correlations
+                        strong_corr = []
+                        for i in range(len(corr_matrix.columns)):
+                            for j in range(i+1, len(corr_matrix.columns)):
+                                col1, col2 = corr_matrix.columns[i], corr_matrix.columns[j]
+                                corr_val = corr_matrix.iloc[i, j]
+                                if abs(corr_val) > 0.4:  # Only meaningful correlations
+                                    strong_corr.append((col1, col2, corr_val))
+                        
+                        if strong_corr:
+                            analysis_summary += "\n\nSTRONG CORRELATIONS:"
+                            for col1, col2, corr_val in sorted(strong_corr, key=lambda x: abs(x[2]), reverse=True)[:3]:
+                                strength = "Very Strong" if abs(corr_val) > 0.8 else "Strong" if abs(corr_val) > 0.6 else "Moderate"
+                                direction = "positive" if corr_val > 0 else "negative"
+                                analysis_summary += f"\n- {col1} ↔ {col2}: {strength} {direction} relationship ({corr_val:.3f})"
+                                
+                except Exception:
+                    analysis_summary += "\n\nStatistical calculations encountered an issue."
+            
+            # Add categorical insights
+            if categorical_cols:
+                analysis_summary += "\n\nCATEGORICAL DATA:"
+                for col in categorical_cols[:3]:
+                    try:
+                        unique_count = df[col].nunique()
+                        most_common = df[col].mode().iloc[0] if len(df[col].mode()) > 0 else "N/A"
+                        pct_most = (df[col].value_counts().iloc[0] / len(df) * 100) if len(df[col].value_counts()) > 0 else 0
+                        analysis_summary += f"\n- {col}: {unique_count} categories, '{most_common}' most frequent ({pct_most:.1f}%)"
+                    except Exception:
+                        continue
 
-            insights_prompt = f'''You are a Principal Data Scientist with 10+ years of experience and a seasoned Business Analyst with extensive real-world business expertise. Your role is to provide professional, strategic insights that bridge technical analysis with actionable business recommendations.
+            # Generate business insights with single fast API call
+            insights_prompt = f'''You are a Principal Data Scientist with 10+ years of experience. Generate strategic business insights based on this complete dataset analysis.
 
-The user asked: "{query}"
+User Query: "{query}"
 
-Drawing from your extensive experience, provide a comprehensive analysis that demonstrates deep understanding of both technical analysis and business strategy.
+{analysis_summary}
 
-{data_summary}
+Based on this COMPLETE analysis of {len(df):,} records, provide professional business insights that directly answer: "{query}"
 
-Sample data:
-{df.head(3).to_string()}
+Use the EXACT statistics, correlations, and percentages shown above. Reference specific calculated values.
 
-NOTE: This dataset has already been pre-filtered and prepared based on previous user instructions. DO NOT apply the same filtering logic again (e.g., if prior steps filtered rows where country='United States', do NOT repeat this).
+Framework:
+1. EXECUTIVE SUMMARY: Key findings directly answering the query
+2. DATA EVIDENCE: Reference specific numbers, correlations, and calculated values above  
+3. BUSINESS IMPLICATIONS: Real-world meaning of these findings
+4. RECOMMENDATIONS: Actionable steps based on the data
+5. CONSIDERATIONS: Limitations or areas needing investigation
 
-IMPORTANT: I have already performed key calculations under the hood. Use the computed insights above to provide data-driven evidence with specific numbers, correlations, and statistical findings. Reference these exact calculated values in your analysis.
+Provide a structured report grounded in the specific calculated values.'''
 
-Professional Analysis Framework:
-1. Executive Summary: Start with key findings that directly answer: "{query}" - use the computed metrics above
-2. Data-Driven Evidence: Use the specific calculated values, correlations, and statistical trends from the computed insights section
-3. Business Context: Interpret the calculated findings through the lens of real-world business implications
-4. Strategic Insights: Provide actionable recommendations based on the numerical evidence from calculations
-5. Risk Assessment: Identify potential limitations in the calculated metrics or areas requiring further investigation
-
-Provide your analysis as a structured, professional report that executives and business stakeholders would find valuable. Ground every insight in the specific calculated values provided above.'''
-
-            # Create Azure OpenAI client with temperature=0 (as specified in attached file)
+            # Single API call for speed
             azure_endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
-            api_key = os.getenv('AZURE_OPENAI_API_KEY')
+            api_key = os.getenv('AZURE_OPENAI_API_KEY') 
             deployment_name = os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')
             
             if not all([azure_endpoint, api_key, deployment_name]):
-                return "Azure OpenAI configuration is incomplete. Please check your environment variables."
+                return "Azure OpenAI configuration is incomplete."
             
             from langchain_openai import AzureChatOpenAI
             
-            insights_client = AzureChatOpenAI(
+            client = AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
-                api_key=api_key,  # Pass as string directly
-                api_version="2023-05-15",
+                api_key=api_key,
+                api_version="2023-05-15", 
                 azure_deployment=deployment_name,
-                temperature=0  # Exact temperature from attached file
+                temperature=0.1  # Slight creativity for business insights
             )
-            response = insights_client.invoke(insights_prompt)
-            insights_text = response.content
-
-            # Self-check & possible rewrite for insights
-            try:
-                from advanced_analysis import self_check_and_rewrite_insight
-                metrics_text_for_check = data_summary  # this already includes computed numbers/correlations
-                checked_insights = self_check_and_rewrite_insight(insights_text, metrics_text_for_check)
-                if checked_insights != insights_text:
-                    insights_text = checked_insights  # replace with corrected version if provided
-                    print("🔍 Analysis was automatically reviewed and enhanced for accuracy")
-            except Exception as e:
-                print(f"Insight self-check skipped: {e}")
             
-            return insights_text
+            response = client.invoke(insights_prompt)
+            return response.content if isinstance(response.content, str) else str(response.content)
                 
         except Exception as e:
             return f"Error generating insights: {str(e)}"
