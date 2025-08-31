@@ -146,6 +146,12 @@ IMPORTANT RULES:
 11. Handle potential errors gracefully
 12. Preserve data types when possible
 
+CRITICAL FILTERING RULE FOR CONVERTED NUMERIC COLUMNS:
+If a column is marked as "object (NUMERIC VALUES: [1, 2, 3...])" in the data info, it contains numeric values stored as objects.
+- ALWAYS use numeric values (not strings) for filtering: df[df['col'] == 1] NOT df[df['col'] == '1']
+- For multiple values: df[df['col'].isin([1, 2, 3])] NOT df[df['col'].isin(['1', '2', '3'])]
+- These columns were converted from int/float to object but still contain numeric data
+
 Respond with only the Python code, no explanations or markdown formatting."""
 
         user_prompt = f"""
@@ -230,6 +236,12 @@ CRITICAL RULES:
 - For data summaries, use df.describe() and include both numeric and categorical insights
 - Always use proper variable names: 'fig' or 'plotly_fig' for plots, 'result' for data, 'analysis_summary' for text
 
+CRITICAL FILTERING RULE FOR CONVERTED NUMERIC COLUMNS:
+If a column is marked as "object (NUMERIC VALUES: [1, 2, 3...])" in the data info, it contains numeric values stored as objects.
+- ALWAYS use numeric values (not strings) for filtering: df[df['col'] == 1] NOT df[df['col'] == '1']
+- For multiple values: df[df['col'].isin([1, 2, 3])] NOT df[df['col'].isin(['1', '2', '3'])]
+- These columns were converted from int/float to object but still contain numeric data
+
 Code structure should be:
 - Perform analysis
 - Create visualizations if needed using Plotly
@@ -305,11 +317,42 @@ Generate Python code to perform this data analysis:
         info_parts.append(f"Shape: {df.shape}")
         info_parts.append(f"Columns: {list(df.columns)}")
         
-        # Data types
+        # Data types with special handling for converted numeric columns
         dtypes_info = []
+        converted_numeric_cols = []
+        
         for col, dtype in df.dtypes.items():
-            dtypes_info.append(f"{col}: {dtype}")
+            # Check if object column contains only numeric values (converted from int/float)
+            if dtype == 'object' and not df[col].empty:
+                # Sample non-null values to check if they're all numeric
+                sample_values = df[col].dropna().head(10)
+                if len(sample_values) > 0:
+                    try:
+                        # Try to convert sample back to numeric to detect converted columns
+                        pd.to_numeric(sample_values, errors='raise')
+                        # If successful, this was likely converted from numeric
+                        converted_numeric_cols.append(col)
+                        unique_vals = sorted(df[col].dropna().unique())
+                        dtypes_info.append(f"{col}: {dtype} (NUMERIC VALUES: {unique_vals[:10]}{'...' if len(unique_vals) > 10 else ''})")
+                    except (ValueError, TypeError):
+                        # Regular object column
+                        dtypes_info.append(f"{col}: {dtype}")
+            else:
+                dtypes_info.append(f"{col}: {dtype}")
+        
         info_parts.append(f"Data Types:\n" + "\n".join(dtypes_info))
+        
+        # Add special warning about converted numeric columns
+        if converted_numeric_cols:
+            warning_msg = f"""
+IMPORTANT FILTERING NOTE:
+Columns {converted_numeric_cols} contain numeric values stored as objects.
+When filtering these columns, use NUMERIC values (not strings):
+- CORRECT: df[df['{converted_numeric_cols[0]}'] == 1]
+- WRONG: df[df['{converted_numeric_cols[0]}'] == '1']
+- CORRECT: df[df['{converted_numeric_cols[0]}'].isin([1, 2, 3])]
+- WRONG: df[df['{converted_numeric_cols[0]}'].isin(['1', '2', '3'])]"""
+            info_parts.append(warning_msg)
         
         # Sample data (first few rows)
         info_parts.append(f"Sample Data (first 3 rows):\n{df.head(3).to_string()}")
