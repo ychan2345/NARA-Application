@@ -2,77 +2,9 @@ import streamlit as st
 import pandas as pd
 import io
 import traceback
-import numpy as np
-import re
 from data_agent import DataAgent
 from code_executor import CodeExecutor
 from utils import display_dataframe, create_download_link
-
-def apply_manual_conversion_fallback(df, column_name, target_dtype, sample_data):
-    """
-    Manual fallback conversion for common data type issues when AI fails.
-    """
-    df_copy = df.copy()
-    
-    if target_dtype == 'float64':
-        # Handle currency and numeric data with special characters
-        def clean_numeric(value):
-            if pd.isna(value):
-                return value
-            # Convert to string and remove common formatting
-            value_str = str(value).strip()
-            # Remove currency symbols, commas, spaces
-            cleaned = re.sub(r'[$€£¥,\s%]', '', value_str)
-            # Handle parentheses for negative numbers
-            if cleaned.startswith('(') and cleaned.endswith(')'):
-                cleaned = '-' + cleaned[1:-1]
-            try:
-                return float(cleaned)
-            except:
-                return np.nan
-        
-        df_copy[column_name] = df_copy[column_name].apply(clean_numeric)
-        
-    elif target_dtype == 'int64':
-        # Similar to float but convert to int
-        def clean_integer(value):
-            if pd.isna(value):
-                return value
-            value_str = str(value).strip()
-            cleaned = re.sub(r'[$€£¥,\s%]', '', value_str)
-            if cleaned.startswith('(') and cleaned.endswith(')'):
-                cleaned = '-' + cleaned[1:-1]
-            try:
-                return int(float(cleaned))  # Convert through float first
-            except:
-                return np.nan
-        
-        df_copy[column_name] = df_copy[column_name].apply(clean_integer)
-        
-    elif target_dtype == 'datetime64[ns]':
-        # Handle various date formats
-        df_copy[column_name] = pd.to_datetime(df_copy[column_name], errors='coerce')
-        
-    elif target_dtype == 'bool':
-        # Handle text to boolean conversion
-        def text_to_bool(value):
-            if pd.isna(value):
-                return value
-            value_str = str(value).lower().strip()
-            if value_str in ['true', 't', 'yes', 'y', '1', 'on']:
-                return True
-            elif value_str in ['false', 'f', 'no', 'n', '0', 'off']:
-                return False
-            else:
-                return np.nan
-        
-        df_copy[column_name] = df_copy[column_name].apply(text_to_bool)
-        
-    else:
-        # For other types, try direct conversion
-        df_copy[column_name] = df_copy[column_name].astype(target_dtype)
-    
-    return df_copy
 
 # Initialize session state
 if 'current_phase' not in st.session_state:
@@ -364,21 +296,17 @@ Sample values: {sample_data}
 Error from standard conversion: {error_message}
 
 Requirements:
-- Use 'df' as the dataframe variable and '{column_to_modify}' as the column name
-- Handle potential errors and edge cases intelligently
+- Use 'df' as the dataframe variable
+- Handle potential errors and edge cases
 - Clean/preprocess the data if needed before conversion
 - Use appropriate pandas methods for the conversion
-- Return ONLY the Python code without any markdown formatting or explanations
-- Make sure the code handles the specific error mentioned above
+- Only return the Python code, no explanations
 
-Example approaches based on the error:
-- For currency strings like '$127613': Remove dollar signs, commas, and other non-numeric characters before converting to float
-- For datetime: handle different date formats, clean strings first  
-- For numeric: remove currency symbols ($, €, £), commas, percent signs, and other formatting
-- For boolean: map text values to True/False intelligently
-- For category: handle missing values appropriately
-
-The code should be robust and handle the specific formatting issues shown in the sample data."""
+Example approaches:
+- For datetime: handle different date formats, clean strings first
+- For numeric: remove non-numeric characters, handle special values
+- For boolean: map text values to True/False
+- For category: handle missing values appropriately"""
 
                                 generated_code = data_agent.generate_manipulation_code(
                                     df_temp, 
@@ -388,10 +316,6 @@ The code should be robust and handle the specific formatting issues shown in the
                                 )
                                 
                                 if generated_code:
-                                    # Show the generated code for debugging
-                                    with st.expander("🔍 View Generated Conversion Code"):
-                                        st.code(generated_code, language="python")
-                                    
                                     # Execute the AI-generated conversion code
                                     result_df = code_executor.execute_manipulation(df_temp, generated_code)
                                     
@@ -401,27 +325,24 @@ The code should be robust and handle the specific formatting issues shown in the
                                         st.success("✅ AI-powered conversion successful!")
                                     else:
                                         st.error("❌ AI-generated code failed to execute properly")
-                                        st.info("💡 The generated code above had execution issues. Trying manual cleanup...")
-                                        
-                                        # Final fallback: Apply common data cleaning patterns based on the data type
-                                        try:
-                                            df_temp = apply_manual_conversion_fallback(df_temp, column_to_modify, new_dtype, sample_data)
-                                            success = True
-                                            st.success("✅ Manual cleanup conversion successful!")
-                                        except Exception as manual_error:
-                                            st.error(f"❌ Manual cleanup also failed: {str(manual_error)}")
                                 else:
                                     st.error("❌ Could not generate conversion code")
                                     
                         except Exception as ai_error:
-                            st.error(f"❌ AI conversion failed: {str(ai_error)}")
+                            st.error(f"❌ AI conversion also failed: {str(ai_error)}")
                     
                     # Apply changes if successful
                     if success:
                         st.session_state.current_df = df_temp
+                        
+                        # Also update approved_df if it exists (user is in analysis phase)
+                        if st.session_state.approved_df is not None:
+                            st.session_state.approved_df = df_temp.copy()
+                            st.info("🔄 Approved dataset has been updated with the new data type change")
+                        
                         st.session_state.manipulation_history.append(f"Changed {column_to_modify} data type to {new_dtype}")
                         st.success(f"✅ Successfully changed {column_to_modify} to {dtype_options[new_dtype]}")
-                        #st.rerun()
+                        st.rerun()
                     else:
                         st.error("❌ Both default and AI-powered conversions failed")
     
@@ -479,14 +400,59 @@ The code should be robust and handle the specific formatting issues shown in the
                         st.code(generated_code, language="python")
                         
                         # Execute the code
-                        result_df = code_executor.execute_manipulation(
-                            st.session_state.current_df, 
-                            generated_code
-                        )
+                        with st.container():
+                            st.write(f"🔍 **Debug**: Executing manipulation on dataset with {len(st.session_state.current_df)} rows")
+                            
+                            # Show available columns for debugging
+                            if 'Region' in st.session_state.current_df.columns:
+                                unique_regions = st.session_state.current_df['Region'].unique()
+                                region_counts = st.session_state.current_df['Region'].value_counts()
+                                st.write(f"🔍 **All unique regions**: {list(unique_regions)}")
+                                st.write(f"🔍 **Region counts**: {dict(region_counts.head(10))}")
+                            else:
+                                # Check for similar column names
+                                region_like_cols = [col for col in st.session_state.current_df.columns if 'region' in col.lower()]
+                                st.write(f"🔍 **Available columns**: {list(st.session_state.current_df.columns)}")
+                                if region_like_cols:
+                                    st.write(f"🔍 **Region-like columns found**: {region_like_cols}")
+                                    for col in region_like_cols[:1]:  # Show values from first region-like column
+                                        sample_values = st.session_state.current_df[col].unique()[:10]
+                                        st.write(f"🔍 **Values in {col}**: {list(sample_values)}")
+                            
+                            result_df = code_executor.execute_manipulation(
+                                st.session_state.current_df, 
+                                generated_code
+                            )
                         
                         if result_df is not None:
-                            # Update current dataframe
-                            st.session_state.current_df = result_df
+                            # Show before/after counts  
+                            original_rows = len(st.session_state.current_df)
+                            new_rows = len(result_df)
+                            
+                            # Check if any actual change occurred
+                            if new_rows == original_rows:
+                                st.warning(f"⚠️ **No rows were filtered!** The filter criteria didn't match any data. Check the exact region names above.")
+                                st.info("💡 **Tip**: Copy the exact region names from the list above and use them in your filter.")
+                                
+                                # Try to suggest correct region names
+                                if 'Region' in st.session_state.current_df.columns:
+                                    unique_regions = st.session_state.current_df['Region'].unique()
+                                    # Look for regions that might match what user wanted
+                                    north_like = [r for r in unique_regions if 'north' in str(r).lower()]
+                                    if north_like:
+                                        st.info(f"🔍 **Found similar regions**: {north_like}")
+                                        suggested_filter = f"df = df[df['Region'].isin({north_like})]"
+                                        st.code(suggested_filter, language="python")
+                                        st.write("Try copying this code and asking: 'apply this filter code'")
+                            
+                            # Update current dataframe only if there was a meaningful change
+                            if new_rows != original_rows or not result_df.equals(st.session_state.current_df):
+                                st.session_state.current_df = result_df
+                                
+                                # Also update approved_df if it exists (user is in analysis phase)
+                                if st.session_state.approved_df is not None:
+                                    st.session_state.approved_df = result_df.copy()
+                                    st.info("🔄 Approved dataset has been updated with the manipulation")
                             
                             # Add to history
                             st.session_state.manipulation_history.append({
@@ -495,19 +461,19 @@ The code should be robust and handle the specific formatting issues shown in the
                                 'timestamp': pd.Timestamp.now()
                             })
                             
-                            st.success("✅ Operation completed successfully!")
-                            st.subheader("📊 Updated Dataset")
-                            display_dataframe(result_df, unique_key="updated")
+                            st.success(f"✅ Operation completed! Dataset updated: {original_rows} → {new_rows} rows")
                             
-                            # Show changes
-                            if st.session_state.original_df is not None:
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.metric("Rows", len(result_df), 
-                                            delta=len(result_df) - len(st.session_state.original_df))
-                                with col2:
-                                    st.metric("Columns", len(result_df.columns),
-                                            delta=len(result_df.columns) - len(st.session_state.original_df.columns))
+                            # Show immediate changes
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Original Rows", original_rows)
+                            with col2:
+                                st.metric("New Rows", new_rows)
+                            with col3:
+                                st.metric("Change", new_rows - original_rows, 
+                                        delta=new_rows - original_rows)
+                            
+                            st.info("🔄 Dataset has been updated. Scroll up to see the updated dataset in the 'Current Dataset' section.")
                             
                             st.rerun()
                         else:
