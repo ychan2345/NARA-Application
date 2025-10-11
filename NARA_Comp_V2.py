@@ -18,12 +18,17 @@ import streamlit_cookies_manager as cookies_manager
 import re
 import numpy as np
 
+# =========================================
+# Setup
+# =========================================
+
+st.set_page_config(page_title="Natural Language AI for Reporting & Analysis (NARA)", layout="wide")
+st.title("🧠 Natural Language AI for Reporting & Analysis (NARA)")
+st.markdown("Upload a CSV file and ask questions to analyze your data. Use the inline **Data Types** tool (optional) to fix column types.")
+
 # Initialize cookies for browser storage with secure password from environment
 cookie_password = os.environ.get('COOKIE_SECRET_KEY', str(uuid.uuid4()))
-cookies = cookies_manager.EncryptedCookieManager(
-    prefix="agentic_ai_",
-    password=cookie_password
-)
+cookies = cookies_manager.EncryptedCookieManager(prefix="agentic_ai_", password=cookie_password)
 if not cookies.ready():
     st.stop()
 
@@ -57,14 +62,14 @@ if 'session_id' not in st.session_state:
             chat_history = persistence.get_chat_history(cookie_session_id)
             st.session_state.chat_history = chat_history if chat_history else []
         elif session_browser_id is None:
+            # Claim old session
             st.session_state.session_id = cookie_session_id
             import sqlite3
             conn = sqlite3.connect(persistence.db_path)
             cursor = conn.cursor()
-            cursor.execute("UPDATE sessions SET browser_id = ? WHERE session_id = ?",
+            cursor.execute("UPDATE sessions SET browser_id = ? WHERE session_id = ?", 
                            (st.session_state.browser_id, cookie_session_id))
-            conn.commit()
-            conn.close()
+            conn.commit(); conn.close()
             loaded_state = persistence.load_session_state(cookie_session_id)
             if loaded_state:
                 st.session_state.original_df = loaded_state.get('original_df')
@@ -74,6 +79,7 @@ if 'session_id' not in st.session_state:
             chat_history = persistence.get_chat_history(cookie_session_id)
             st.session_state.chat_history = chat_history if chat_history else []
         else:
+            # New secure session
             session_id = persistence.create_session(browser_id=st.session_state.browser_id)
             st.session_state.session_id = session_id
             cookies['session_id'] = session_id
@@ -87,7 +93,10 @@ if 'session_id' not in st.session_state:
 if cookies_need_save:
     cookies.save()
 
-# Read recipe inputs
+# =========================================
+# Feedback (Dataiku)
+# =========================================
+
 user_feedback = dataiku.Folder("VZvmcTtt")
 user_feedback_info = user_feedback.get_info()
 file_name = "intention_feedback.json"
@@ -108,7 +117,7 @@ def deduplicate_across_categories(data_dict):
 with user_feedback.get_download_stream("intention_feedback.json") as stream:
     feedback = json.loads(stream.read().decode("utf-8"))
 
-deduped_data  = deduplicate_across_categories(feedback)
+deduped_data = deduplicate_across_categories(feedback)
 
 latest_code_entries = {}
 for item in deduped_data.get("code", []):
@@ -116,8 +125,7 @@ for item in deduped_data.get("code", []):
     if text not in latest_code_entries or ts > latest_code_entries[text]["timestamp"]:
         latest_code_entries[text] = {"text": text, "timestamp": ts}
 latest_code_list = [{"text": v["text"], "timestamp": v["timestamp"].isoformat()} for v in latest_code_entries.values()]
-code_feedback = [f'{entry["text"]} -> code' for entry in latest_code_list]
-code_feedback_format = "  \n".join(code_feedback)
+code_feedback_format = "  \n".join([f'{e["text"]} -> code' for e in latest_code_list])
 
 latest_insight_entries = {}
 for item in deduped_data.get("insight", []):
@@ -125,10 +133,16 @@ for item in deduped_data.get("insight", []):
     if text not in latest_insight_entries or ts > latest_insight_entries[text]["timestamp"]:
         latest_insight_entries[text] = {"text": text, "timestamp": ts}
 latest_insight_list = [{"text": v["text"], "timestamp": v["timestamp"].isoformat()} for v in latest_insight_entries.values()]
-insight_feedback = [f'{entry["text"]} -> insight' for entry in latest_insight_list]
-insight_feedback_format = "  \n".join(insight_feedback)
+insight_feedback_format = "  \n".join([f'{e["text"]} -> insight' for e in latest_insight_list])
+
+# =========================================
+# Utils
+# =========================================
 
 def apply_manual_conversion_fallback(df, column_name, target_dtype, sample_data):
+    """
+    Manual fallback conversion for common data type issues when AI fails.
+    """
     df_copy = df.copy()
     if target_dtype == 'float64':
         def clean_numeric(value):
@@ -164,19 +178,18 @@ def apply_manual_conversion_fallback(df, column_name, target_dtype, sample_data)
         df_copy[column_name] = df_copy[column_name].astype(target_dtype)
     return df_copy
 
-# Always reload chat history
+# Always reload chat history for consistency
 if 'session_id' in st.session_state:
     chat_history = persistence.get_chat_history(st.session_state.session_id)
     st.session_state.chat_history = chat_history if chat_history else []
 
 # Initialize session state
-if 'current_phase' not in st.session_state: st.session_state.current_phase = 'upload'  # upload, manipulation, analysis
+if 'current_phase' not in st.session_state: st.session_state.current_phase = 'upload'  # 'upload' or 'analysis'
 if 'uploaded_files' not in st.session_state: st.session_state.uploaded_files = {}
 if 'selected_file' not in st.session_state: st.session_state.selected_file = None
 if 'original_df' not in st.session_state: st.session_state.original_df = None
 if 'current_df' not in st.session_state: st.session_state.current_df = None
 if 'approved_df' not in st.session_state: st.session_state.approved_df = None
-if 'manipulation_history' not in st.session_state: st.session_state.manipulation_history = []
 if 'analysis_history' not in st.session_state: st.session_state.analysis_history = []
 if 'chat_history' not in st.session_state: st.session_state.chat_history = []
 if 'unique_categories' not in st.session_state: st.session_state.unique_categories = {}
@@ -186,23 +199,20 @@ if 'feedback_status' not in st.session_state: st.session_state.feedback_status =
 data_agent = DataAgent()
 code_executor = CodeExecutor()
 
-st.set_page_config(page_title="Natural Language AI for Reporting & Analysis (NARA)", layout="wide")
-st.title("🧠 Natural Language AI for Reporting & Analysis (NARA)")
-st.markdown("Upload a CSV file and ask questions to analyze your data. Use the Data Types section (optional) to fix column types.")
-
+# =========================================
 # Sidebar
+# =========================================
+
 with st.sidebar:
     st.header("📋 Workflow Status")
     phases = {
         'upload': '📁 Upload Data',
-        'manipulation': '🔧 Data Types',
         'analysis': '📊 Data Analysis'
     }
     for phase_key, phase_name in phases.items():
         if st.session_state.current_phase == phase_key:
             st.write(f"**➤ {phase_name}** ✅")
-        elif (phase_key == 'manipulation' and st.session_state.original_df is not None) or \
-             (phase_key == 'analysis' and st.session_state.approved_df is not None):
+        elif (phase_key == 'analysis' and st.session_state.approved_df is not None):
             st.write(f"   {phase_name} ✅")
         else:
             st.write(f"   {phase_name}")
@@ -248,12 +258,12 @@ with st.sidebar:
         )
         st.session_state.session_id = new_session_id
         cookies['session_id'] = new_session_id; cookies.save()
+        # Reset session state
         st.session_state.original_df = None
         st.session_state.current_df = None
         st.session_state.approved_df = None
         st.session_state.current_phase = 'upload'
         st.session_state.chat_history = []
-        st.session_state.manipulation_history = []
         st.session_state.analysis_history = []
         st.session_state.uploaded_files = {}
         st.session_state.selected_file = None
@@ -291,8 +301,7 @@ with st.sidebar:
             st.session_state.current_df = st.session_state.original_df.copy()
             st.session_state.approved_df = st.session_state.current_df.copy()
             st.session_state.current_phase = 'analysis'
-            st.session_state.manipulation_history = []
-            st.session_state.analysis_history = []
+            # Build unique categories for AI context
             st.session_state.unique_categories = {}
             for col in st.session_state.current_df.select_dtypes(include=['object', 'category']).columns:
                 unique_vals = st.session_state.current_df[col].dropna().unique()
@@ -308,37 +317,10 @@ with st.sidebar:
             )
             st.rerun()
 
-    st.divider()
-
-    # Phase-specific sidebar actions
-    if st.session_state.current_phase == 'manipulation' and st.session_state.current_df is not None:
-        st.subheader("🎯 Dataset Actions")
-        # REMOVED: Back to Analysis button (per request)
-        if st.button("🔄 Reset to Original"):
-            if st.session_state.original_df is not None:
-                st.session_state.current_df = st.session_state.original_df.copy()
-                st.session_state.manipulation_history = []
-                st.success("Reset to original dataset!")
-                st.rerun()
-
-    elif st.session_state.current_phase == 'analysis':
-        st.subheader("🎯 Analysis Actions")
-        if st.button("🔧 Back to Manipulation"):
-            # Do NOT clear approved_df; allow type changes then return manually later (no button)
-            st.session_state.current_phase = 'manipulation'
-            st.rerun()
-        if st.button("📁 Upload New Dataset"):
-            st.session_state.uploaded_files = {}
-            st.session_state.selected_file = None
-            for key in ['original_df','current_df','approved_df','manipulation_history','analysis_history','chat_history','unique_categories']:
-                if 'history' in key or key == 'unique_categories':
-                    st.session_state[key] = [] if 'history' in key else {}
-                else:
-                    st.session_state[key] = None
-            st.session_state.current_phase = 'upload'
-            st.rerun()
-
+# =========================================
 # Main content
+# =========================================
+
 if st.session_state.current_phase == 'upload':
     st.header("📁 Upload Your Datasets")
     uploaded_files = st.file_uploader(
@@ -396,19 +378,25 @@ if st.session_state.current_phase == 'upload':
             with st.expander(f"Preview: {filename} ({len(df)} rows, {len(df.columns)} columns)"):
                 st.dataframe(df.head(5), use_container_width=True)
 
-elif st.session_state.current_phase == 'manipulation':
-    st.header("🔧 Data Types")
-    st.subheader("Modify Column Data Types")
-    if st.session_state.current_df is not None:
-        with st.expander("Modify Column Data Types", expanded=True):
+elif st.session_state.current_phase == 'analysis':
+    st.header("📊 Data Analysis")
+
+    # ---------- Inline Data Types Modifications (on Analysis page) ----------
+    st.subheader("🔧 Fix Column Data Types (Optional)")
+    if st.session_state.approved_df is not None:
+        with st.expander("Modify Column Data Types", expanded=False):
+            working_df = st.session_state.approved_df.copy()
+
             col1, col2 = st.columns(2)
             with col1:
                 column_to_modify = st.selectbox(
                     "Select column:",
-                    options=st.session_state.current_df.columns.tolist()
+                    options=working_df.columns.tolist(),
+                    key="analysis_dtype_col_select"
                 )
-                current_dtype = str(st.session_state.current_df[column_to_modify].dtype)
+                current_dtype = str(working_df[column_to_modify].dtype)
                 st.text(f"Current type: {current_dtype}")
+
             with col2:
                 dtype_options = {
                     'object': 'Text (object)',
@@ -421,115 +409,110 @@ elif st.session_state.current_phase == 'manipulation':
                 new_dtype = st.selectbox(
                     "New data type:",
                     options=list(dtype_options.keys()),
-                    format_func=lambda x: dtype_options[x]
+                    format_func=lambda x: dtype_options[x],
+                    key="analysis_dtype_new_select"
                 )
-                if st.button("Apply Data Type Change"):
-                    df_temp = st.session_state.current_df.copy()
-                    success = False
-                    error_message = ""
-                    try:
-                        if new_dtype == 'datetime64[ns]':
-                            df_temp[column_to_modify] = pd.to_datetime(df_temp[column_to_modify])
-                        elif new_dtype == 'category':
-                            df_temp[column_to_modify] = df_temp[column_to_modify].astype('category')
-                        elif new_dtype == 'bool':
-                            df_temp[column_to_modify] = df_temp[column_to_modify].astype('bool')
-                        else:
-                            df_temp[column_to_modify] = df_temp[column_to_modify].astype(new_dtype)
-                        success = True
-                    except Exception as default_error:
-                        error_message = str(default_error)
-                        st.warning(f"⚠️ Default conversion failed: {error_message}")
-                        st.info("🤖 Trying AI-powered data type conversion...")
-                        try:
-                            with st.spinner("Generating intelligent conversion code..."):
-                                sample_data = df_temp[column_to_modify].dropna().head(10).tolist()
-                                conversion_prompt = f"""Generate Python code to convert a pandas DataFrame column to {new_dtype}.
 
-                                Column name: {column_to_modify}
-                                Current data type: {current_dtype}
-                                Target data type: {new_dtype}
-                                Sample values: {sample_data}
-                                Error from standard conversion: {error_message}
+            if st.button("Apply Data Type Change", key="analysis_apply_dtype"):
+                df_temp = working_df.copy()
+                success = False
+                error_message = ""
 
-                                Requirements:
-                                - Use 'df' as the dataframe variable and '{column_to_modify}' as the column name
-                                - Handle edge cases; clean data if needed
-                                - Return ONLY Python code (no markdown)
-                                """
-                                generated_code = data_agent.generate_manipulation_code(
-                                    df_temp, conversion_prompt, chat_history=[], unique_categories={}
-                                )
-                                if generated_code:
-                                    with st.expander("🔍 View Generated Conversion Code"):
-                                        st.code(generated_code, language="python")
-                                    result_df = code_executor.execute_manipulation(df_temp, generated_code)
-                                    if result_df is not None:
-                                        df_temp = result_df; success = True
-                                        st.success("✅ AI-powered conversion successful!")
-                                    else:
-                                        st.error("❌ AI-generated code failed; attempting manual cleanup...")
-                                        try:
-                                            df_temp = apply_manual_conversion_fallback(df_temp, column_to_modify, new_dtype, sample_data)
-                                            success = True
-                                            st.success("✅ Manual cleanup conversion successful!")
-                                        except Exception as manual_error:
-                                            st.error(f"❌ Manual cleanup also failed: {str(manual_error)}")
-                                else:
-                                    st.error("❌ Could not generate conversion code")
-                        except Exception as ai_error:
-                            st.error(f"❌ AI conversion failed: {str(ai_error)}")
-
-                    if success:
-                        st.session_state.current_df = df_temp
-                        st.session_state.manipulation_history.append(f"Changed {column_to_modify} data type to {new_dtype}")
-                        st.success(f"✅ Changed {column_to_modify} to {dtype_options[new_dtype]}")
-                        st.rerun()
+                try:
+                    if new_dtype == 'datetime64[ns]':
+                        df_temp[column_to_modify] = pd.to_datetime(df_temp[column_to_modify])
+                    elif new_dtype == 'category':
+                        df_temp[column_to_modify] = df_temp[column_to_modify].astype('category')
+                    elif new_dtype == 'bool':
+                        df_temp[column_to_modify] = df_temp[column_to_modify].astype('bool')
                     else:
-                        st.error("❌ Both default and AI-powered conversions failed")
+                        df_temp[column_to_modify] = df_temp[column_to_modify].astype(new_dtype)
+                    success = True
+                except Exception as default_error:
+                    error_message = str(default_error)
+                    st.warning(f"⚠️ Default conversion failed: {error_message}")
+                    st.info("🤖 Trying AI-powered data type conversion...")
 
-    st.subheader("📊 Current Dataset")
-    display_dataframe(st.session_state.current_df, unique_key="current")
+                    try:
+                        with st.spinner("Generating intelligent conversion code..."):
+                            sample_data = df_temp[column_to_modify].dropna().head(10).tolist()
+                            conversion_prompt = f"""Generate Python code to convert a pandas DataFrame column to {new_dtype}.
+                            Column name: {column_to_modify}
+                            Current data type: {current_dtype}
+                            Target data type: {new_dtype}
+                            Sample values: {sample_data}
+                            Error from standard conversion: {error_message}
+                            Requirements:
+                            - Use 'df' as the dataframe variable and '{column_to_modify}' as the column name
+                            - Handle edge cases; clean data if needed
+                            - Return ONLY Python code (no markdown)
+                            """
+                            generated_code = data_agent.generate_manipulation_code(
+                                df_temp, conversion_prompt, chat_history=[], unique_categories={}
+                            )
+                            if generated_code:
+                                with st.expander("🔍 View Generated Conversion Code"):
+                                    st.code(generated_code, language="python")
+                                result_df = code_executor.execute_manipulation(df_temp, generated_code)
+                                if result_df is not None:
+                                    df_temp = result_df
+                                    success = True
+                                    st.success("✅ AI-powered conversion successful!")
+                                else:
+                                    st.error("❌ AI-generated code failed; attempting manual cleanup...")
+                                    try:
+                                        df_temp = apply_manual_conversion_fallback(
+                                            df_temp, column_to_modify, new_dtype, sample_data
+                                        )
+                                        success = True
+                                        st.success("✅ Manual cleanup conversion successful!")
+                                    except Exception as manual_error:
+                                        st.error(f"❌ Manual cleanup also failed: {str(manual_error)}")
+                            else:
+                                st.error("❌ Could not generate conversion code")
+                    except Exception as ai_error:
+                        st.error(f"❌ AI conversion failed: {str(ai_error)}")
 
-    if st.session_state.current_df is not None:
-        csv_data = st.session_state.current_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Current Dataset",
-            data=csv_data,
-            file_name="typed_data.csv",
-            mime="text/csv"
-        )
+                if success:
+                    # Keep both frames in sync so analysis immediately reflects the change
+                    st.session_state.approved_df = df_temp.copy()
+                    st.session_state.current_df = df_temp.copy()
 
-elif st.session_state.current_phase == 'analysis':
-    st.header("📊 Data Analysis")
+                    # Rebuild unique_categories (helps downstream prompts)
+                    st.session_state.unique_categories = {}
+                    for col in st.session_state.approved_df.select_dtypes(include=['object', 'category']).columns:
+                        vals = st.session_state.approved_df[col].dropna().unique()
+                        if len(vals) <= 50:
+                            st.session_state.unique_categories[col] = vals.tolist()
+
+                    # Persist and refresh
+                    persistence.save_session_state(
+                        st.session_state.session_id,
+                        original_df=st.session_state.original_df,
+                        current_df=st.session_state.current_df,
+                        approved_df=st.session_state.approved_df,
+                        phase='analysis'
+                    )
+                    st.success(f"✅ Changed {column_to_modify} to {dtype_options[new_dtype]}")
+                    st.rerun()
+                else:
+                    st.error("❌ Both default and AI-powered conversions failed")
+
+    # ---------- Dataset info & table ----------
     if st.session_state.approved_df is not None:
         col1, col2, col3 = st.columns(3)
         with col1: st.metric("Rows", len(st.session_state.approved_df))
         with col2: st.metric("Columns", len(st.session_state.approved_df.columns))
         with col3: st.metric("Analyses", len(st.session_state.analysis_history))
 
-    st.subheader("📊 Approved Dataset")
-    st.info("This dataset is ready. Ask a question below to analyze it. Use the sidebar to go back to Data Types if needed.")
+    st.subheader("📊 Working Dataset")
+    st.info("This is the dataset used for all analyses. Fix types above if needed, then ask your question below.")
     display_dataframe(st.session_state.approved_df, unique_key="approved")
 
+    # ---------- Analysis chat ----------
     st.subheader("🔍 Natural Language Data Analysis")
-    if st.session_state.chat_history and len(st.session_state.chat_history) > 0:
-        with st.expander(f"💬 Chat History ({len(st.session_state.chat_history)} questions)", expanded=False):
-            for i, chat in enumerate(reversed(st.session_state.chat_history)):
-                query_type = chat.get('type', 'unknown')
-                query_text = chat.get('query', 'No query')
-                timestamp = chat.get('timestamp', '')
-                time_str = ""
-                if timestamp:
-                    try:
-                        time_str = timestamp if isinstance(timestamp, str) else timestamp.strftime("%H:%M:%S")
-                    except:
-                        time_str = str(timestamp)
-                icon = "🔧" if query_type == "manipulation" else "📊"
-                st.markdown(f"{icon} **Q{len(st.session_state.chat_history)-i}:** {query_text}")
-                if time_str: st.caption(f"🕐 {time_str}")
-                if i < len(st.session_state.chat_history) - 1: st.divider()
 
+    # Quick actions
     st.write("**Quick Actions:**")
     col1, col2, col3, col4 = st.columns(4)
     quick_action_clicked = False; quick_action_query = ""
@@ -567,12 +550,11 @@ elif st.session_state.current_phase == 'analysis':
                 st.session_state.last_intent = intent
                 st.session_state.feedback_status = True
 
+                base_df = st.session_state.approved_df if st.session_state.approved_df is not None else st.session_state.current_df
+
                 if intent == "insight":
                     st.info("🧠 Generating strategic business insights...")
-                    insights = data_agent.generate_enhanced_insights(
-                        st.session_state.approved_df if st.session_state.approved_df is not None else st.session_state.current_df,
-                        analysis_query
-                    )
+                    insights = data_agent.generate_enhanced_insights(base_df, analysis_query)
                     if insights:
                         analysis_result = {'text_output': insights, 'dataframe': None, 'plotly_fig': None, 'plot': None, 'type': 'insight'}
                         st.session_state.analysis_history.append({
@@ -590,12 +572,12 @@ elif st.session_state.current_phase == 'analysis':
                         st.error("❌ Failed to generate insights. Please try rephrasing your query.")
                 else:
                     st.info("⚙️ Generating and executing analysis code...")
-                    base_df = st.session_state.approved_df if st.session_state.approved_df is not None else st.session_state.current_df
                     generated_code = data_agent.generate_analysis_code(
                         base_df, analysis_query, chat_history=st.session_state.chat_history, unique_categories=st.session_state.unique_categories
                     )
                     st.session_state.chat_history.append({'type': 'analysis', 'query': analysis_query, 'timestamp': pd.Timestamp.now()})
                     persistence.save_chat_message(st.session_state.session_id, analysis_query, 'analysis')
+
                     if generated_code:
                         analysis_result = code_executor.execute_analysis(base_df, generated_code, analysis_query)
                         if analysis_result:
@@ -629,6 +611,7 @@ elif st.session_state.current_phase == 'analysis':
                 st.error(f"❌ Error: {str(e)}")
                 st.error("Please try rephrasing your analysis request.")
 
+    # Prior analysis conversations
     if st.session_state.analysis_history and len(st.session_state.analysis_history) > 1:
         st.divider(); st.subheader("💬 Previous Analysis Conversations")
         for i, analysis in enumerate(reversed(st.session_state.analysis_history[:-1])):
