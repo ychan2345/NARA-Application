@@ -1198,38 +1198,3 @@ elif st.session_state.current_phase == 'analysis':
                 except Exception as e:
                     st.error(f"Error saving feedback: {e}")
             
-
-    
-    # Show conversation history AFTER the chat interface (only previous analyses, not current one)
-    if st.session_state.analysis_history and len(st.session_state.analysis_history) > 1:
-        st.divider()
-        st.subheader("💬 Previous Analysis Conversations")
-        # Show all except the latest one (which is displayed above during execution)
-        for i, analysis in enumerate(reversed(st.session_state.analysis_history[:-1])):
-                # Calculate the actual position in the original list
-                analysis_num = len(st.session_state.analysis_history) - i - 1
-                with st.expander(f"Analysis #{analysis_num}: {analysis['query'][:60]}..." if len(analysis['query']) > 60 else f"Analysis #{analysis_num}: {analysis['query']}"):
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.write(f"**Query:** {analysis['query']}")
-                    with col2:
-                        st.write(f"**Time:** {analysis['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-                    
-                    if analysis.get('code'):
-                        with st.expander("🔍 View Generated Code"):
-                            st.code(analysis['code'], language="python")
-                    
-                    if analysis['result']:
-                        if 'text_output' in analysis['result'] and analysis['result']['text_output']:
-                            st.write("**Analysis Summary:**")
-                            st.write(analysis['result']['text_output'])
-                        
-                        if 'dataframe' in analysis['result'] and analysis['result']['dataframe'] is not None:
-                            st.write("**Result Data:**")
-                            display_dataframe(analysis['result']['dataframe'], unique_key=f"history_{i}")
-                        
-                        if 'plotly_fig' in analysis['result'] and analysis['result']['plotly_fig']:
-                            st.plotly_chart(analysis['result']['plotly_fig'], use_container_width=True, key=f"history_chart_{i}")
-                        elif 'plot' in analysis['result'] and analysis['result']['plot']:
-                            st.pyplot(analysis['result']['plot'])
-
