@@ -1,3 +1,17 @@
+# Handle both string and datetime timestamp formats
+                    timestamp = chat.get('timestamp', '')
+                    if isinstance(timestamp, str):
+                        time_str = timestamp
+                    else:
+                        try:
+                            time_str = timestamp.strftime('%H:%M:%S')
+                        except:
+                            time_str = str(timestamp)
+                    
+                    st.write(f"**{chat['type'].title()}** - {time_str}")
+                    st.write(f"Query: {chat['query']}")
+                    st.divider()
+
 Found
 # Apply changes if successful
 if success:
