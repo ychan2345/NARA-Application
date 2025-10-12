@@ -1,128 +1,70 @@
-# Handle both string and datetime timestamp formats
-                    timestamp = chat.get('timestamp', '')
-                    if isinstance(timestamp, str):
-                        time_str = timestamp
-                    else:
-                        try:
-                            time_str = timestamp.strftime('%H:%M:%S')
-                        except:
-                            time_str = str(timestamp)
-                    
-                    st.write(f"**{chat['type'].title()}** - {time_str}")
-                    st.write(f"Query: {chat['query']}")
-                    st.divider()
+1) Add a tiny helper to save chat messages (works for both branches)
 
-Found
-# Apply changes if successful
-if success:
-    st.session_state.current_df = df_temp
-    
-    # Also update approved_df if it exists (user is in analysis phase)
-    if st.session_state.approved_df is not None:
-        st.session_state.approved_df = df_temp.copy()
-        st.info("🔄 Approved dataset has been updated with the new data type change")
-    
-    st.session_state.manipulation_history.append(f"Changed {column_to_modify} data type to {new_dtype}")
-    st.success(f"✅ Successfully changed {column_to_modify} to {dtype_options[new_dtype]}")
-    st.rerun()
+Insert anywhere after your imports / state init (e.g., right below your other small helpers):
+
+# --- helper: persist chat history uniformly ---
+def _save_chat_message(kind: str, text: str):
+    """Append a chat message to session state and DB."""
+    if 'chat_history' not in st.session_state or st.session_state.chat_history is None:
+        st.session_state.chat_history = []
+    st.session_state.chat_history.append({
+        'type': kind,
+        'query': text,
+        'timestamp': pd.Timestamp.now()
+    })
+    try:
+        persistence.save_chat_message(st.session_state.session_id, text, kind)
+    except Exception:
+        pass
+# --- end helper ---
+
+2) Record the user’s question for BOTH insight & code paths
+
+Find this line in the analysis handler (inside elif st.session_state.current_phase == 'analysis':):
+
+intent = data_agent.route_query_intelligently(analysis_query, code_feedback_format, insight_feedback_format)
 
 
-Replace:
-# Apply changes if successful
-if success:
-    st.session_state.current_df = df_temp
-    st.session_state.manipulation_history.append(f"Changed {column_to_modify} data type to {new_dtype}")
-    st.success(f"✅ Successfully changed {column_to_modify} to {dtype_options[new_dtype]}")
-    st.rerun()
+Immediately after it, insert:
+
+# record the user's question in chat history (works for both branches)
+_save_chat_message('analysis', analysis_query)
 
 
-Found:
-# Update current dataframe only if there was a meaningful change
-if new_rows != original_rows or not result_df.equals(st.session_state.current_df):
-    st.session_state.current_df = result_df
-    
-    # Also update approved_df if it exists (user is in analysis phase)
-    if st.session_state.approved_df is not None:
-        st.session_state.approved_df = result_df.copy()
-        st.info("🔄 Approved dataset has been updated with the manipulation")
+Now remove any old duplicates lower down (you likely have these in the code branch):
 
-Replace:
-# Update current dataframe only if there was a meaningful change
-if new_rows != original_rows or not result_df.equals(st.session_state.current_df):
-    st.session_state.current_df = result_df
-
-Found
-if st.button("✅ Approve Dataset for Analysis", type="primary"):
-    st.session_state.approved_df = st.session_state.current_df.copy()
-    st.session_state.current_phase = 'analysis'
-    ...
-
-Replace
-if st.button("✅ Approve Dataset for Analysis", type="primary"):
-    st.session_state.approved_df = st.session_state.current_df.copy()
-    st.session_state.approved_source = "current"  # <-- add this line
-    st.session_state.current_phase = 'analysis'
-    ...
-
-Found
-if st.button("🔄 Reset to Original"):
-    if st.session_state.original_df is not None:
-        st.session_state.current_df = st.session_state.original_df.copy()
-        st.session_state.manipulation_history = []
-        # Clear approved_df since we've reset to original - must re-approve
-        st.session_state.approved_df = None
-        ...
-
-Replace
-if st.button("🔄 Reset to Original"):
-    if st.session_state.original_df is not None:
-        st.session_state.current_df = st.session_state.original_df.copy()
-        st.session_state.manipulation_history = []
-        # Clear approved_df since we've reset to original - must re-approve
-        st.session_state.approved_df = None
-        st.session_state.approved_source = None  # <-- add this line
-        ...
-
-Found
-if st.button("🔧 Back to Manipulation"):
-    st.session_state.current_phase = 'manipulation'
-    # Clear approved_df so it must be re-approved after any changes
-    st.session_state.approved_df = None
-    ...
-
-Replace
-if st.button("🔧 Back to Manipulation"):
-    st.session_state.current_phase = 'manipulation'
-    # Clear approved_df so it must be re-approved after any changes
-    st.session_state.approved_df = None
-    st.session_state.approved_source = None  # <-- add this line
-    ...
+# DELETE these two lines if present (the helper replaces them)
+st.session_state.chat_history.append({'type': 'analysis', 'query': analysis_query, 'timestamp': pd.Timestamp.now()})
+persistence.save_chat_message(st.session_state.session_id, analysis_query, 'analysis')
 
 
-Found
-# Debug info to track dataset state
-if st.session_state.approved_df is not None and st.session_state.original_df is not None:
-    if len(st.session_state.approved_df) == len(st.session_state.original_df):
-        st.info(f"✅ Using ORIGINAL dataset ({len(st.session_state.approved_df)} rows)")
-    else:
-        st.warning(f"⚠️ Using FILTERED dataset ({len(st.session_state.approved_df)} rows, original had {len(st.session_state.original_df)} rows)")
+Keep everything else the same. This guarantees the message is saved for both “insight” and “code” flows.
 
-Replace
-# Debug info to track dataset state
-if st.session_state.approved_df is not None and st.session_state.original_df is not None:
-    if st.session_state.approved_df.equals(st.session_state.original_df):
-        st.info(f"✅ Using ORIGINAL dataset ({len(st.session_state.approved_df)} rows)")
-    else:
-        src = st.session_state.get("approved_source", "modified")
-        st.warning(
-            f"⚠️ Using {src.upper()} dataset "
-            f"({len(st.session_state.approved_df)} rows, original had {len(st.session_state.original_df)} rows)"
-        )
+3) Show chat history on the Analysis page
+
+Place this block near the top of the Analysis page UI (e.g., right BEFORE “Quick Actions”):
+
+# ---- Show chat history (previous questions) ----
+if st.session_state.chat_history and len(st.session_state.chat_history) > 0:
+    with st.expander(f"💬 Chat History ({len(st.session_state.chat_history)} questions)", expanded=False):
+        for i, chat in enumerate(reversed(st.session_state.chat_history)):
+            query_text = chat.get('query', '')
+            ts = chat.get('timestamp', '')
+            try:
+                time_str = ts if isinstance(ts, str) else ts.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                time_str = str(ts)
+            st.markdown(f"📊 **Q{len(st.session_state.chat_history)-i}:** {query_text}")
+            if time_str:
+                st.caption(f"🕐 {time_str}")
+            if i < len(st.session_state.chat_history) - 1:
+                st.divider()
 
 
-Optional
-# Prevent accidental edits when an approved dataset exists
-if st.session_state.get("approved_df") is not None:
-    st.warning("You currently have an approved dataset. Click **'🔧 Back to Manipulation'** in the sidebar to modify data.")
-    st.stop()
+Good insertion point example:
 
+Right after your inline “Fix Column Data Types” expander finishes, and
+
+Right before:
+
+st.write("**Quick Actions:**")
