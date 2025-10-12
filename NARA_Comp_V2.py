@@ -178,6 +178,25 @@ def apply_manual_conversion_fallback(df, column_name, target_dtype, sample_data)
         df_copy[column_name] = df_copy[column_name].astype(target_dtype)
     return df_copy
 
+def _normalize_to_dataframe(obj):
+    """Turn common table-shaped outputs into a DataFrame."""
+    if obj is None:
+        return None
+    if isinstance(obj, pd.DataFrame):
+        return obj
+    if isinstance(obj, pd.Series):
+        return obj.to_frame()
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        # list of dicts
+        return pd.DataFrame(obj)
+    if isinstance(obj, dict):
+        # dict of lists/scalars
+        try:
+            return pd.DataFrame(obj)
+        except Exception:
+            return None
+    return None
+
 # Always reload chat history for consistency
 if 'session_id' in st.session_state:
     chat_history = persistence.get_chat_history(st.session_state.session_id)
@@ -289,104 +308,7 @@ with st.sidebar:
             st.write(f"   {phase_name}")
     st.divider()
 
-    st.subheader("💾 Session Management")
-    current_session_info = persistence.get_session_info(st.session_state.session_id)
-    if current_session_info:
-        st.write("**Current Session:**")
-        st.write(f"📝 {current_session_info['session_name']}")
-        with st.expander("✏️ Rename Session"):
-            new_name = st.text_input("New session name:", value=current_session_info['session_name'], key="rename_session_input")
-            if st.button("💾 Save Name", key="save_session_name"):
-                if new_name:
-                    persistence.update_session_name(st.session_state.session_id, new_name)
-                    st.success("Session renamed!")
-                    st.rerun()
-
-    all_sessions = persistence.get_all_sessions(browser_id=st.session_state.browser_id)
-    if len(all_sessions) > 1:
-        with st.expander(f"🔄 Switch Session ({len(all_sessions)} total)"):
-            for session in all_sessions[:10]:
-                is_current = session['session_id'] == st.session_state.session_id
-                button_label = f"{'✅ ' if is_current else ''}{session['session_name']}"
-                if not is_current and st.button(button_label, key=f"switch_{session['session_id'][:8]}"):
-                    st.session_state.session_id = session['session_id']
-                    cookies['session_id'] = session['session_id']; cookies.save()
-                    loaded_state = persistence.load_session_state(session['session_id'])
-                    if loaded_state:
-                        st.session_state.original_df = loaded_state.get('original_df')
-                        st.session_state.current_df = loaded_state.get('current_df')
-                        st.session_state.approved_df = loaded_state.get('approved_df')
-                        st.session_state.current_phase = loaded_state.get('phase', 'upload')
-                    chat_history = persistence.get_chat_history(session['session_id'])
-                    st.session_state.chat_history = chat_history if chat_history else []
-                    st.success(f"Switched to: {session['session_name']}")
-                    st.rerun()
-
-    if st.button("➕ New Session", key="create_new_session"):
-        new_session_id = persistence.create_session(
-            session_name=f"New Session {pd.Timestamp.now().strftime('%H:%M')}",
-            browser_id=st.session_state.browser_id
-        )
-        st.session_state.session_id = new_session_id
-        cookies['session_id'] = new_session_id; cookies.save()
-        # Reset session state
-        st.session_state.original_df = None
-        st.session_state.current_df = None
-        st.session_state.approved_df = None
-        st.session_state.current_phase = 'upload'
-        st.session_state.chat_history = []
-        st.session_state.analysis_history = []
-        st.session_state.uploaded_files = {}
-        st.session_state.selected_file = None
-        st.session_state.unique_categories = {}
-        st.success("New session created!")
-        st.rerun()
-
-    st.divider()
-    st.subheader("🔧 Global Actions")
-    if st.button("🔄 Reset Everything", type="secondary"):
-        browser_id = st.session_state.get('browser_id')
-        new_session_id = persistence.create_session(browser_id=browser_id)
-        cookies['session_id'] = new_session_id; cookies.save()
-        for key in list(st.session_state.keys()):
-            if key != 'browser_id':
-                del st.session_state[key]
-        st.session_state.session_id = new_session_id
-        st.success("Everything has been reset! Starting fresh session.")
-        st.rerun()
-
-    # Dataset switcher
-    if len(st.session_state.uploaded_files) > 1:
-        st.markdown("**📂 Switch Dataset**")
-        current_file = st.session_state.get('selected_file', 'None selected')
-        st.write(f"Current: {current_file}")
-        available_files = list(st.session_state.uploaded_files.keys())
-        current_index = available_files.index(current_file) if current_file in available_files else 0
-        new_selection = st.selectbox("Select different dataset:", available_files, index=current_index, key="dataset_switcher")
-        if st.button("🔄 Switch Dataset") and new_selection != current_file:
-            if st.session_state.get('current_df') is not None and st.session_state.get('selected_file'):
-                st.info(f"Switching from {st.session_state.selected_file} to {new_selection}")
-            # Switch + auto-approve + go to analysis
-            st.session_state.selected_file = new_selection
-            st.session_state.original_df = st.session_state.uploaded_files[new_selection].copy()
-            st.session_state.current_df = st.session_state.original_df.copy()
-            st.session_state.approved_df = st.session_state.current_df.copy()
-            st.session_state.current_phase = 'analysis'
-            # Build unique categories for AI context
-            st.session_state.unique_categories = {}
-            for col in st.session_state.current_df.select_dtypes(include=['object', 'category']).columns:
-                unique_vals = st.session_state.current_df[col].dropna().unique()
-                if len(unique_vals) <= 50:
-                    st.session_state.unique_categories[col] = unique_vals.tolist()
-            st.success(f"Switched to dataset: {new_selection} (ready for analysis)")
-            persistence.save_session_state(
-                st.session_state.session_id,
-                original_df=st.session_state.original_df,
-                current_df=st.session_state.current_df,
-                approved_df=st.session_state.approved_df,
-                phase='analysis'
-            )
-            st.rerun()
+    
 
 # =========================================
 # Main content
@@ -450,6 +372,120 @@ if st.session_state.current_phase == 'upload':
                 st.dataframe(df.head(5), use_container_width=True)
 
 elif st.session_state.current_phase == 'analysis':
+
+    with st.sidebar:
+
+        st.subheader("💾 Session Management")
+        current_session_info = persistence.get_session_info(st.session_state.session_id)
+        if current_session_info:
+            st.write("**Current Session:**")
+            st.write(f"📝 {current_session_info['session_name']}")
+            with st.expander("✏️ Rename Session"):
+                new_name = st.text_input("New session name:", value=current_session_info['session_name'], key="rename_session_input")
+                if st.button("💾 Save Name", key="save_session_name"):
+                    if new_name:
+                        persistence.update_session_name(st.session_state.session_id, new_name)
+                        st.success("Session renamed!")
+                        st.rerun()
+
+        all_sessions = persistence.get_all_sessions(browser_id=st.session_state.browser_id)
+        if len(all_sessions) > 1:
+            with st.expander(f"🔄 Switch Session ({len(all_sessions)} total)"):
+                for session in all_sessions[:10]:
+                    is_current = session['session_id'] == st.session_state.session_id
+                    button_label = f"{'✅ ' if is_current else ''}{session['session_name']}"
+                    if not is_current and st.button(button_label, key=f"switch_{session['session_id'][:8]}"):
+                        st.session_state.session_id = session['session_id']
+                        cookies['session_id'] = session['session_id']; cookies.save()
+                        loaded_state = persistence.load_session_state(session['session_id'])
+                        if loaded_state:
+                            st.session_state.original_df = loaded_state.get('original_df')
+                            st.session_state.current_df = loaded_state.get('current_df')
+                            st.session_state.approved_df = loaded_state.get('approved_df')
+                            st.session_state.current_phase = loaded_state.get('phase', 'upload')
+                        chat_history = persistence.get_chat_history(session['session_id'])
+                        st.session_state.chat_history = chat_history if chat_history else []
+                        st.success(f"Switched to: {session['session_name']}")
+                        st.rerun()
+
+        if st.button("➕ New Session", key="create_new_session"):
+            # Create a fresh session id but keep current dataset & phase
+            new_session_id = persistence.create_session(
+                session_name=f"New Session {pd.Timestamp.now().strftime('%H:%M')}",
+                browser_id=st.session_state.browser_id
+            )
+            st.session_state.session_id = new_session_id
+            cookies['session_id'] = new_session_id
+            cookies.save()
+
+            # Keep the dataset and phase as-is (stay in analysis mode)
+            # DO NOT reset original_df/current_df/approved_df/selected_file/uploaded_files/unique_categories
+            # Only clear chat history
+            st.session_state.chat_history = []
+
+            # (Optional) If you also want to clear the analysis history, uncomment the next line:
+            st.session_state.analysis_history = []
+
+            # Make sure we persist the current dataset & phase into the new session row
+            current_phase = 'analysis' if st.session_state.approved_df is not None else st.session_state.current_phase
+            persistence.save_session_state(
+                st.session_state.session_id,
+                original_df=st.session_state.original_df,
+                current_df=st.session_state.current_df,
+                approved_df=st.session_state.approved_df,
+                phase=current_phase
+            )
+
+            st.success("New session created — kept current dataset & analysis mode, cleared chat history.")
+            st.rerun()
+
+        st.divider()
+
+        st.subheader("🔧 Global Actions")
+        if st.button("🔄 Reset Everything", type="secondary"):
+            browser_id = st.session_state.get('browser_id')
+            new_session_id = persistence.create_session(browser_id=browser_id)
+            cookies['session_id'] = new_session_id; cookies.save()
+            for key in list(st.session_state.keys()):
+                if key != 'browser_id':
+                    del st.session_state[key]
+            st.session_state.session_id = new_session_id
+            st.success("Everything has been reset! Starting fresh session.")
+            st.rerun()
+
+        # Dataset switcher
+        if len(st.session_state.uploaded_files) > 1:
+            st.markdown("**📂 Switch Dataset**")
+            current_file = st.session_state.get('selected_file', 'None selected')
+            st.write(f"Current: {current_file}")
+            available_files = list(st.session_state.uploaded_files.keys())
+            current_index = available_files.index(current_file) if current_file in available_files else 0
+            new_selection = st.selectbox("Select different dataset:", available_files, index=current_index, key="dataset_switcher")
+            if st.button("🔄 Switch Dataset") and new_selection != current_file:
+                if st.session_state.get('current_df') is not None and st.session_state.get('selected_file'):
+                    st.info(f"Switching from {st.session_state.selected_file} to {new_selection}")
+                # Switch + auto-approve + go to analysis
+                st.session_state.selected_file = new_selection
+                st.session_state.original_df = st.session_state.uploaded_files[new_selection].copy()
+                st.session_state.current_df = st.session_state.original_df.copy()
+                st.session_state.approved_df = st.session_state.current_df.copy()
+                st.session_state.current_phase = 'analysis'
+                # Build unique categories for AI context
+                st.session_state.unique_categories = {}
+                for col in st.session_state.current_df.select_dtypes(include=['object', 'category']).columns:
+                    unique_vals = st.session_state.current_df[col].dropna().unique()
+                    if len(unique_vals) <= 50:
+                        st.session_state.unique_categories[col] = unique_vals.tolist()
+                st.success(f"Switched to dataset: {new_selection} (ready for analysis)")
+                persistence.save_session_state(
+                    st.session_state.session_id,
+                    original_df=st.session_state.original_df,
+                    current_df=st.session_state.current_df,
+                    approved_df=st.session_state.approved_df,
+                    phase='analysis'
+                )
+                st.rerun()
+
     st.header("📊 Data Analysis")
 
     # ---------- Inline Data Types Modifications (on Analysis page) ----------
@@ -647,7 +683,7 @@ elif st.session_state.current_phase == 'analysis':
                     if insights:
                         analysis_result = {'text_output': insights, 'dataframe': None, 'plotly_fig': None, 'plot': None, 'type': 'insight'}
                         st.session_state.analysis_history.append({
-                            'query': analysis_query, 'code': None, 'result': analysis_result, 'intent': 'insight', 'timestamp': pd.Timestamp.now()
+                            'query': analysis_query, 'code': result.get('final_code'), 'result': analysis_result, 'intent': 'insight', 'timestamp': pd.Timestamp.now()
                         })
                         st.success("✅ Strategic analysis completed!")
                         st.subheader("📊 Business Insights"); st.write(insights)
@@ -686,13 +722,41 @@ elif st.session_state.current_phase == 'analysis':
                             msg += f" (auto-repaired in {attempts_used} attempt(s))"
                         st.success(msg)
 
-                        # Show ONLY the AI text (per your previous requirement)
+                        # --- Show the generated / repaired Python code ---
+                        final_code = result.get('final_code')
+                        if final_code:
+                            with st.expander("🔍 View Generated Python Code", expanded=False):
+                                st.code(final_code, language="python")
+
+                        # --- AI text (unchanged) ---
                         st.subheader("📊 AI Response")
                         text = result.get('text_output')
                         if text:
                             st.write(text)
                         else:
                             st.info("No written response was produced.")
+
+                        # --- NEW: show a table if provided ---
+                        # Primary path: CodeExecutor fills 'dataframe' when code assigns to result/result_df
+                        df_out = result.get('dataframe')
+
+                        # Fallback: if your executor ever returns a raw 'result' payload, normalize it
+                        if df_out is None:
+                            df_out = _normalize_to_dataframe(result.get('result'))
+
+                        if df_out is not None:
+                            st.subheader("📋 Table")
+                            # unique key to avoid re-render collisions
+                            unique_key = f"analysis_result_{len(st.session_state.analysis_history)}"
+                            display_dataframe(df_out, unique_key=unique_key)
+
+                        # 2) Visualization (if any)
+                        # Prefer Plotly; otherwise show Matplotlib/Seaborn
+                        if result.get('plotly_fig') is not None:
+                            st.plotly_chart(result['plotly_fig'], use_container_width=True, key=f"analysis_chart_{int(pd.Timestamp.now().value)}")
+                        elif result.get('plot') is not None:
+                            st.pyplot(result['plot'])
+
                     else:
                         st.error("❌ Analysis failed after automatic repair attempts.")
                         # Optional, for debugging:
