@@ -1,40 +1,85 @@
-1) Show the code in the success UI (retry path)
+1) Add a tiny helper to normalize table-like results
 
-Where: analysis phase → non-insight branch → after run_with_retry(...), inside the if result and result.get('ok'): block.
+Put this helper near your other utils (right after apply_manual_conversion_fallback(...) is a good spot):
 
-Add this right after you write the AI response text:
+def _normalize_to_dataframe(obj):
+    """Turn common table-shaped outputs into a DataFrame."""
+    if obj is None:
+        return None
+    if isinstance(obj, pd.DataFrame):
+        return obj
+    if isinstance(obj, pd.Series):
+        return obj.to_frame()
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        # list of dicts
+        return pd.DataFrame(obj)
+    if isinstance(obj, dict):
+        # dict of lists/scalars
+        try:
+            return pd.DataFrame(obj)
+        except Exception:
+            return None
+    return None
 
-# --- Show the generated / repaired Python code ---
-final_code = result.get('final_code')
-if final_code:
-    with st.expander("🔍 View Generated Python Code", expanded=False):
-        st.code(final_code, language="python")
+2) Show a table when the model returns one
+
+Find this block (inside the analysis branch where intent != "insight" and after run_with_retry(...)):
+
+if result and result.get('ok'):
+    st.session_state.analysis_history.append({
+        'query': analysis_query,
+        'code': None,  # keep code hidden per your preference
+        'result': result,
+        'intent': 'code',
+        'timestamp': pd.Timestamp.now()
+    })
+    msg = "✅ Analysis completed successfully!"
+    if result.get('self_repair_used'):
+        msg += f" (auto-repaired in {attempts_used} attempt(s))"
+    st.success(msg)
+
+    # Show ONLY the AI text (per your previous requirement)
+    st.subheader("📊 AI Response")
+    text = result.get('text_output')
+    if text:
+        st.write(text)
+    else:
+        st.info("No written response was produced.")
 
 
-This pulls the code from result['final_code'] (which your CodeExecutor.execute_analysis() already returns, including the repaired version when auto-repair was used).
+Replace it with:
 
-2) Save the code into analysis history (so it appears in “Previous Analysis”)
+if result and result.get('ok'):
+    st.session_state.analysis_history.append({
+        'query': analysis_query,
+        'code': None,  # keep code hidden per your preference
+        'result': result,
+        'intent': 'code',
+        'timestamp': pd.Timestamp.now()
+    })
+    msg = "✅ Analysis completed successfully!"
+    if result.get('self_repair_used'):
+        msg += f" (auto-repaired in {attempts_used} attempt(s))"
+    st.success(msg)
 
-Find this block (right after a successful result):
+    # --- AI text (unchanged) ---
+    st.subheader("📊 AI Response")
+    text = result.get('text_output')
+    if text:
+        st.write(text)
+    else:
+        st.info("No written response was produced.")
 
-st.session_state.analysis_history.append({
-    'query': analysis_query,
-    'code': None,  # keep code hidden per your preference
-    'result': result,
-    'intent': 'code',
-    'timestamp': pd.Timestamp.now()
-})
+    # --- NEW: show a table if provided ---
+    # Primary path: CodeExecutor fills 'dataframe' when code assigns to result/result_df
+    df_out = result.get('dataframe')
 
+    # Fallback: if your executor ever returns a raw 'result' payload, normalize it
+    if df_out is None:
+        df_out = _normalize_to_dataframe(result.get('result'))
 
-Change it to:
-
-st.session_state.analysis_history.append({
-    'query': analysis_query,
-    'code': result.get('final_code'),  # <-- store code so history expander shows it
-    'result': result,
-    'intent': 'code',
-    'timestamp': pd.Timestamp.now()
-})
-
-
-Your “Previous Analysis Conversations” section already shows code when analysis['code'] exists, so this makes past runs display their script too.
+    if df_out is not None:
+        st.subheader("📋 Table")
+        # unique key to avoid re-render collisions
+        unique_key = f"analysis_result_{len(st.session_state.analysis_history)}"
+        display_dataframe(df_out, unique_key=unique_key)
