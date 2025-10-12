@@ -1,85 +1,118 @@
-1) Add a tiny helper to normalize table-like results
+1) code_executor.py — add a table finder and use it
+A) Add this helper (near the top of the file, after imports or inside the class as a @staticmethod)
+def _find_table_in_namespace(ns):
+    """Heuristically find a table-like object in an exec namespace."""
+    import pandas as pd  # safe if not at top
+    candidates = []
 
-Put this helper near your other utils (right after apply_manual_conversion_fallback(...) is a good spot):
+    SKIP = {'df','pd','np','plt','sns','px','go','ff','make_subplots','stats','analysis_summary',
+            'plotly_fig','fig','result','result_df','results','__builtins__'}
 
-def _normalize_to_dataframe(obj):
-    """Turn common table-shaped outputs into a DataFrame."""
-    if obj is None:
-        return None
-    if isinstance(obj, pd.DataFrame):
-        return obj
-    if isinstance(obj, pd.Series):
-        return obj.to_frame()
-    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+    for k, v in ns.items():
+        if k in SKIP or k.startswith('__'):
+            continue
+        # DataFrame
+        if isinstance(v, pd.DataFrame):
+            candidates.append((k, v))
+            continue
+        # Series -> DataFrame
+        if hasattr(v, 'to_frame') and callable(getattr(v, 'to_frame', None)):
+            try:
+                df = v.to_frame()
+                candidates.append((k, df))
+                continue
+            except Exception:
+                pass
         # list of dicts
-        return pd.DataFrame(obj)
-    if isinstance(obj, dict):
-        # dict of lists/scalars
-        try:
-            return pd.DataFrame(obj)
-        except Exception:
-            return None
-    return None
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            try:
+                import pandas as pd
+                df = pd.DataFrame(v)
+                candidates.append((k, df))
+                continue
+            except Exception:
+                pass
+        # dict -> DataFrame
+        if isinstance(v, dict):
+            try:
+                import pandas as pd
+                df = pd.DataFrame(v)
+                # avoid 1xN dicts turning into a single-row
+                if df.shape[0] >= 1 and df.shape[1] >= 1:
+                    candidates.append((k, df))
+            except Exception:
+                pass
 
-2) Show a table when the model returns one
+    if not candidates:
+        return None
 
-Find this block (inside the analysis branch where intent != "insight" and after run_with_retry(...)):
+    # prefer the largest table (by cells)
+    _, best = max(candidates, key=lambda kv: kv[1].shape[0] * kv[1].shape[1])
+    return best
 
-if result and result.get('ok'):
-    st.session_state.analysis_history.append({
-        'query': analysis_query,
-        'code': None,  # keep code hidden per your preference
-        'result': result,
-        'intent': 'code',
-        'timestamp': pd.Timestamp.now()
-    })
-    msg = "✅ Analysis completed successfully!"
-    if result.get('self_repair_used'):
-        msg += f" (auto-repaired in {attempts_used} attempt(s))"
-    st.success(msg)
+B) In execute_analysis(...), after you’ve executed the code and built the result dict, add a fallback if result['dataframe'] is still None.
 
-    # Show ONLY the AI text (per your previous requirement)
-    st.subheader("📊 AI Response")
-    text = result.get('text_output')
-    if text:
-        st.write(text)
-    else:
-        st.info("No written response was produced.")
+You have two paths in your executor:
+
+Self-repair path (when query passed; you already read obs).
+
+Normal exec path.
+
+Add the salvage block in both.
+
+In the self-repair success branch (right after you set result and before return result):
+# If a dataframe-like result is present (you already try obs['result'])
+if obs.get('result') is not None:
+    if hasattr(obs.get('result'), 'shape'):
+        result['dataframe'] = obs.get('result')
+    elif isinstance(obs.get('result'), dict):
+        result['text_output'] = str(obs.get('result'))
+
+# ⬇️ NEW: salvage any table from the exec env if result['dataframe'] is still empty
+if result.get('dataframe') is None:
+    table = _find_table_in_namespace(exec_env)
+    if table is not None:
+        result['dataframe'] = table
+
+In the normal exec branch (after you populate text_output/dataframe and before return result):
+# Existing: try result_df/result etc...
+if exec_env.get('result_df') is not None and hasattr(exec_env.get('result_df'), 'shape'):
+    result['dataframe'] = exec_env.get('result_df')
+elif exec_env.get('result') is not None and hasattr(exec_env.get('result'), 'shape'):
+    result['dataframe'] = exec_env.get('result')
+
+# ⬇️ NEW: salvage any table from the exec env if still missing
+if result.get('dataframe') is None:
+    table = _find_table_in_namespace(exec_env)
+    if table is not None:
+        result['dataframe'] = table
 
 
-Replace it with:
+That’s it for the executor. Now, even if the LLM forgets to assign the table to result, you’ll still surface one.
 
-if result and result.get('ok'):
-    st.session_state.analysis_history.append({
-        'query': analysis_query,
-        'code': None,  # keep code hidden per your preference
-        'result': result,
-        'intent': 'code',
-        'timestamp': pd.Timestamp.now()
-    })
-    msg = "✅ Analysis completed successfully!"
-    if result.get('self_repair_used'):
-        msg += f" (auto-repaired in {attempts_used} attempt(s))"
-    st.success(msg)
+2) (Optional but recommended) advanced_analysis.py — make self-repair set result when missing
 
-    # --- AI text (unchanged) ---
-    st.subheader("📊 AI Response")
-    text = result.get('text_output')
-    if text:
-        st.write(text)
-    else:
-        st.info("No written response was produced.")
+If you’re using run_code_with_self_repair(...), add the same salvage right after exec(cleaned, exec_env) and before you copy vars to obs:
 
-    # --- NEW: show a table if provided ---
-    # Primary path: CodeExecutor fills 'dataframe' when code assigns to result/result_df
-    df_out = result.get('dataframe')
+# After exec, before building obs
+if "result" not in exec_env:
+    try:
+        from code_executor import _find_table_in_namespace
+        tbl = _find_table_in_namespace(exec_env)
+        if tbl is not None:
+            exec_env["result"] = tbl
+    except Exception:
+        pass
 
-    # Fallback: if your executor ever returns a raw 'result' payload, normalize it
-    if df_out is None:
-        df_out = _normalize_to_dataframe(result.get('result'))
 
-    if df_out is not None:
-        st.subheader("📋 Table")
-        # unique key to avoid re-render collisions
-        unique_key = f"analysis_result_{len(st.session_state.analysis_history)}"
-        display_dataframe(df_out, unique_key=unique_key)
+(If _find_table_in_namespace is inside the class, duplicate the minimal logic here instead of importing.)
+
+Why this fixes your symptom
+
+The LLM often names tables summary_df, table, pivot, etc.
+
+Your Streamlit app shows tables only when the executor returns dataframe (or result convertible to a DataFrame).
+
+With the “table salvage” block, any reasonable tabular output in the namespace will be found and returned—so the “Table” section won’t be empty when the AI text talks about a summary table.
+
+No changes are needed in your Streamlit file you pasted above (you already display result['dataframe']).
