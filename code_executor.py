@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
@@ -111,8 +110,19 @@ class CodeExecutor:
             return None
     
     def execute_analysis(self, df, code, query=""):
-        """Execute analysis code with self-repair capability and enhanced results."""
-        
+        """Execute analysis code with self-repair capability and enhanced results.
+        Always returns a dict with keys:
+        - ok: bool
+        - text_output: str | ""
+        - dataframe: pd.DataFrame | None
+        - plot: matplotlib Figure | None
+        - plotly_fig: go.Figure | None
+        - self_repair_used: bool
+        - repair_attempts: int
+        - error: str | ""
+        - traceback: str | ""
+        - final_code: str | None
+        """
         try:
             # Create safe namespace for analysis
             exec_env = {
@@ -133,110 +143,119 @@ class CodeExecutor:
                 'result': None,
                 **self.safe_builtins
             }
-            
+
             # Clear any existing plots
             plt.clf()
             plt.close('all')
-            
-            # Set up matplotlib for better plots
+
+            # Set up matplotlib
             plt.style.use('default')
             plt.rcParams['figure.figsize'] = (10, 6)
             plt.rcParams['font.size'] = 10
-            
-            # Use self-repair execution if query is provided
+
+            # ---------- Try self-repair engine first ----------
             if query:
                 obs, final_code = run_code_with_self_repair(code, exec_env, query)
-                
-                # If self-repair succeeded, use its results
+
+                # Success via self-repair
                 if not obs.get("errors"):
                     result = {
-                        'text_output': obs.get('stdout', ''),  # Capture stdout from self-repair
+                        'ok': True,
+                        'text_output': obs.get('stdout', '') or '',
                         'dataframe': None,
                         'plot': None,
                         'plotly_fig': obs.get('fig'),
-                        'self_repair_used': obs.get('repair_attempts', 0) > 0
+                        'self_repair_used': obs.get('repair_attempts', 0) > 0,
+                        'repair_attempts': int(obs.get('repair_attempts', 0)),
+                        'error': '',
+                        'traceback': '',
+                        'final_code': final_code
                     }
-                    
-                    # Check for dataframe results
+                    # If a dataframe-like result is present
                     if obs.get('result') is not None:
                         if hasattr(obs.get('result'), 'shape'):
                             result['dataframe'] = obs.get('result')
                         elif isinstance(obs.get('result'), dict):
-                            # If result is a dict, it might contain analysis results
                             result['text_output'] = str(obs.get('result'))
-                    
-                    # Skip narrative generation for code responses
-                    # Only return raw code execution results
-                    
                     return result
-                else:
-                    # Self-repair failed, fall back to normal execution
-                    print(f"Self-repair failed after {obs.get('repair_attempts', 0)} attempts")
-            
-            # Fallback to normal execution
+
+                # Self-repair failed: return structured failure so caller can retry
+                return {
+                    'ok': False,
+                    'text_output': '',
+                    'dataframe': None,
+                    'plot': None,
+                    'plotly_fig': None,
+                    'self_repair_used': False,
+                    'repair_attempts': int(obs.get('repair_attempts', 0)),
+                    'error': "\n".join(obs.get('errors', [])),
+                    'traceback': obs.get('traceback', ''),
+                    'final_code': final_code
+                }
+
+            # ---------- Fallback: normal exec (no self-repair) ----------
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
-            
             with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
                 exec(code, exec_env)
-            
-            # Collect results more comprehensively
+
             result = {
+                'ok': True,
                 'text_output': '',
                 'dataframe': None,
                 'plot': None,
-                'plotly_fig': None
+                'plotly_fig': None,
+                'self_repair_used': False,
+                'repair_attempts': 0,
+                'error': '',
+                'traceback': '',
+                'final_code': code
             }
-            
-            # Check for text output - try multiple variable names
-            text_output = None
-            if exec_env.get('analysis_summary'):
-                text_output = exec_env.get('analysis_summary')
-            elif exec_env.get('summary'):
-                text_output = exec_env.get('summary')
-            elif exec_env.get('result_text'):
-                text_output = exec_env.get('result_text')
-            
-            if text_output:
-                result['text_output'] = str(text_output)
-            
-            # Check for dataframe results
+
+            # Text output from variables
+            for var in ('analysis_summary', 'summary', 'result_text'):
+                if exec_env.get(var):
+                    result['text_output'] = str(exec_env.get(var))
+                    break
+
+            # DataFrame results
             if exec_env.get('result_df') is not None and hasattr(exec_env.get('result_df'), 'shape'):
                 result['dataframe'] = exec_env.get('result_df')
             elif exec_env.get('result') is not None and hasattr(exec_env.get('result'), 'shape'):
                 result['dataframe'] = exec_env.get('result')
-            
-            # Check for figure results with multiple possible variable names
-            fig_candidates = ['plotly_fig', 'fig', 'correlation_heatmap', 'chart', 'visualization']
-            for var_name in fig_candidates:
+
+            # Plotly figures (several common names)
+            for var_name in ['plotly_fig', 'fig', 'correlation_heatmap', 'chart', 'visualization']:
                 fig_obj = exec_env.get(var_name)
-                if fig_obj is not None:
-                    # Validate it's a proper plotly figure
-                    if hasattr(fig_obj, 'data') and hasattr(fig_obj, 'layout'):
-                        result['plotly_fig'] = fig_obj
-                        break
-            
-            # Fallback to matplotlib
+                if fig_obj is not None and hasattr(fig_obj, 'data') and hasattr(fig_obj, 'layout'):
+                    result['plotly_fig'] = fig_obj
+                    break
+
+            # Matplotlib fallback
             if result['plotly_fig'] is None and plt.get_fignums():
                 result['plot'] = plt.gcf()
-            
-            # Get any printed output and ensure it's captured
+
+            # Printed output
             printed_output = stdout_capture.getvalue().strip()
-            
-            # Prioritize printed output for text results
             if printed_output:
                 result['text_output'] = printed_output
-                print(f"Captured and set printed output: {printed_output}")
-            elif text_output:
-                result['text_output'] = str(text_output)
-                print(f"Using variable text_output: {text_output}")
-            
+
             return result
-            
+
         except Exception as e:
-            print(f"Analysis execution error: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
-            return None
+            return {
+                'ok': False,
+                'text_output': '',
+                'dataframe': None,
+                'plot': None,
+                'plotly_fig': None,
+                'self_repair_used': False,
+                'repair_attempts': 0,
+                'error': str(e),
+                'traceback': traceback.format_exc(),
+                'final_code': code
+            }
+
     
     def validate_code_safety(self, code):
         """Basic validation to ensure code doesn't contain dangerous operations."""
