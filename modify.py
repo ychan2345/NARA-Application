@@ -83,13 +83,3 @@ A few notes:
 locals_dict should be whatever mapping you’re using to read back variables from the executed code environment (often the same dict you pass to exec(...)).
 
 You don’t need to change your prompts. This simply makes the repair loop tolerant if the model used a different variable name for the chart or relied on implicit Matplotlib state.
-
-Quick sanity checklist
-
- code_executor.py environment includes both plt and sns imports and entries in exec_env (you already added this).
-
- code_executor.py self-repair success path routes obs['fig'] into either result['plotly_fig'] (Plotly) or result['plot'] (Matplotlib/Seaborn).
-
- NARA_Comp_V2.py renders result['plotly_fig'] or result['plot'] in the main success block (patch above).
-
- advanced_analysis.py run_code_with_self_repair(...) ensures obs['fig'] is set by scanning locals if not explicitly assigned.
