@@ -195,6 +195,77 @@ if 'chat_history' not in st.session_state: st.session_state.chat_history = []
 if 'unique_categories' not in st.session_state: st.session_state.unique_categories = {}
 if 'feedback_status' not in st.session_state: st.session_state.feedback_status = None
 
+# --- helper: persist chat history uniformly ---
+def _save_chat_message(kind: str, text: str):
+    """Append a chat message to session state and DB."""
+    if 'chat_history' not in st.session_state or st.session_state.chat_history is None:
+        st.session_state.chat_history = []
+    st.session_state.chat_history.append({
+        'type': kind,
+        'query': text,
+        'timestamp': pd.Timestamp.now()
+    })
+    try:
+        persistence.save_chat_message(st.session_state.session_id, text, kind)
+    except Exception:
+        pass
+
+# --- end helper ---
+
+# --- Retry LLMs ---
+def run_with_retry(base_df, user_query, data_agent, code_executor, unique_categories, chat_history, max_attempts=3):
+    """
+    Returns (result_dict, attempts_used)
+    result_dict respects CodeExecutor's schema and includes 'ok' boolean.
+    """
+    attempts = 0
+
+    # 1) First code generation
+    code = data_agent.generate_analysis_code(
+        base_df,
+        user_query,
+        chat_history=chat_history,
+        unique_categories=unique_categories
+    )
+    if not code:
+        return ({'ok': False, 'error': 'Code generation failed', 'text_output': ''}, attempts)
+
+    while attempts < max_attempts:
+        attempts += 1
+        res = code_executor.execute_analysis(base_df, code, user_query)
+        if res and res.get('ok'):
+            # Mark self-repair usage if attempts > 1
+            if attempts > 1:
+                res['self_repair_used'] = True
+            return (res, attempts)
+
+        # Prepare repair prompt using error + final_code from executor
+        err = (res or {}).get('error', '')
+        tb = (res or {}).get('traceback', '')
+        last_code = (res or {}).get('final_code', code)
+
+        repair_prompt = (
+            f"{user_query}\n\n"
+            f"The previous Python code failed with this error:\n{err}\n\n"
+            f"Traceback:\n{tb}\n\n"
+            f"Here is the failing code:\n\n{last_code}\n\n"
+            "Return a fully corrected Python script ONLY (no markdown). "
+            "It must be robust to missing columns and data types, avoid inplace pitfalls, "
+            "and execute without errors."
+        )
+        code = data_agent.generate_analysis_code(
+            base_df,
+            repair_prompt,
+            chat_history=chat_history,
+            unique_categories=unique_categories
+        )
+        if not code:
+            break
+
+    return (res or {'ok': False, 'error': 'Exhausted retries'}, attempts)
+
+# --- End Retry LLMs ---
+
 # Initialize agents
 data_agent = DataAgent()
 code_executor = CodeExecutor()
@@ -512,6 +583,22 @@ elif st.session_state.current_phase == 'analysis':
     # ---------- Analysis chat ----------
     st.subheader("🔍 Natural Language Data Analysis")
 
+    # ---- Show chat history (previous questions) ----
+    if st.session_state.chat_history and len(st.session_state.chat_history) > 0:
+        with st.expander(f"💬 Chat History ({len(st.session_state.chat_history)} questions)", expanded=False):
+            for i, chat in enumerate(reversed(st.session_state.chat_history)):
+                query_text = chat.get('query', '')
+                ts = chat.get('timestamp', '')
+                try:
+                    time_str = ts if isinstance(ts, str) else ts.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    time_str = str(ts)
+                st.markdown(f"📊 **Q{len(st.session_state.chat_history)-i}:** {query_text}")
+                if time_str:
+                    st.caption(f"🕐 {time_str}")
+                if i < len(st.session_state.chat_history) - 1:
+                    st.divider()
+
     # Quick actions
     st.write("**Quick Actions:**")
     col1, col2, col3, col4 = st.columns(4)
@@ -546,6 +633,8 @@ elif st.session_state.current_phase == 'analysis':
         with st.spinner("🤖 Analyzing with AI..."):
             try:
                 intent = data_agent.route_query_intelligently(analysis_query, code_feedback_format, insight_feedback_format)
+                # record the user's question in chat history (works for both branches)
+                _save_chat_message('analysis', analysis_query)
                 st.session_state.last_query = analysis_query
                 st.session_state.last_intent = intent
                 st.session_state.feedback_status = True
@@ -571,42 +660,43 @@ elif st.session_state.current_phase == 'analysis':
                     else:
                         st.error("❌ Failed to generate insights. Please try rephrasing your query.")
                 else:
-                    st.info("⚙️ Generating and executing analysis code...")
-                    generated_code = data_agent.generate_analysis_code(
-                        base_df, analysis_query, chat_history=st.session_state.chat_history, unique_categories=st.session_state.unique_categories
-                    )
-                    st.session_state.chat_history.append({'type': 'analysis', 'query': analysis_query, 'timestamp': pd.Timestamp.now()})
-                    persistence.save_chat_message(st.session_state.session_id, analysis_query, 'analysis')
+                    st.info("⚙️ Generating and executing analysis code (with auto-repair)...")
+                    base_df = st.session_state.approved_df if st.session_state.approved_df is not None else st.session_state.current_df
 
-                    if generated_code:
-                        analysis_result = code_executor.execute_analysis(base_df, generated_code, analysis_query)
-                        if analysis_result:
-                            st.session_state.analysis_history.append({
-                                'query': analysis_query, 'code': generated_code, 'result': analysis_result, 'intent': 'code', 'timestamp': pd.Timestamp.now()
-                            })
-                            msg = "✅ Analysis completed successfully!"
-                            if analysis_result.get('self_repair_used'): msg += " (Enhanced with automatic error correction)"
-                            st.success(msg)
-                            with st.expander("🔍 View Generated Python Code"):
-                                st.code(generated_code, language="python")
-                            st.subheader("📊 Analysis Results")
-                            results_displayed = False
-                            if analysis_result.get('text_output'):
-                                st.write("**Analysis Summary:**"); st.write(analysis_result['text_output']); results_displayed = True
-                            if analysis_result.get('dataframe') is not None:
-                                st.write("**Result DataFrame:**"); display_dataframe(analysis_result['dataframe'], unique_key="analysis_result"); results_displayed = True
-                            if analysis_result.get('plotly_fig'):
-                                st.write("**Visualization:**"); st.plotly_chart(analysis_result['plotly_fig'], use_container_width=True, key="current_analysis_chart"); results_displayed = True
-                            elif analysis_result.get('plot'):
-                                st.write("**Visualization:**"); st.pyplot(analysis_result['plot']); results_displayed = True
-                            if not results_displayed:
-                                st.info("Code ran but produced no visible output.")
+                    result, attempts_used = run_with_retry(
+                        base_df=base_df,
+                        user_query=analysis_query,
+                        data_agent=data_agent,
+                        code_executor=code_executor,
+                        unique_categories=st.session_state.unique_categories,
+                        chat_history=st.session_state.chat_history,
+                        max_attempts=3
+                    )
+
+                    if result and result.get('ok'):
+                        st.session_state.analysis_history.append({
+                            'query': analysis_query,
+                            'code': None,  # keep code hidden per your preference
+                            'result': result,
+                            'intent': 'code',
+                            'timestamp': pd.Timestamp.now()
+                        })
+                        msg = "✅ Analysis completed successfully!"
+                        if result.get('self_repair_used'):
+                            msg += f" (auto-repaired in {attempts_used} attempt(s))"
+                        st.success(msg)
+
+                        # Show ONLY the AI text (per your previous requirement)
+                        st.subheader("📊 AI Response")
+                        text = result.get('text_output')
+                        if text:
+                            st.write(text)
                         else:
-                            st.error("❌ Analysis execution failed. Try a different question.")
-                            with st.expander("🔍 View Generated Python Code"):
-                                st.code(generated_code, language="python")
+                            st.info("No written response was produced.")
                     else:
-                        st.error("❌ Failed to generate analysis code. Please rephrase and try again.")
+                        st.error("❌ Analysis failed after automatic repair attempts.")
+                        # Optional, for debugging:
+                        # st.caption(result.get('error', ''))
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
                 st.error("Please try rephrasing your analysis request.")
