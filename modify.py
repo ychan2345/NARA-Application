@@ -1,30 +1,40 @@
-if st.button("➕ New Session", key="create_new_session"):
-    # Create a fresh session id but keep current dataset & phase
-    new_session_id = persistence.create_session(
-        session_name=f"New Session {pd.Timestamp.now().strftime('%H:%M')}",
-        browser_id=st.session_state.browser_id
-    )
-    st.session_state.session_id = new_session_id
-    cookies['session_id'] = new_session_id
-    cookies.save()
+1) Show the code in the success UI (retry path)
 
-    # Keep the dataset and phase as-is (stay in analysis mode)
-    # DO NOT reset original_df/current_df/approved_df/selected_file/uploaded_files/unique_categories
-    # Only clear chat history
-    st.session_state.chat_history = []
+Where: analysis phase → non-insight branch → after run_with_retry(...), inside the if result and result.get('ok'): block.
 
-    # (Optional) If you also want to clear the analysis history, uncomment the next line:
-    # st.session_state.analysis_history = []
+Add this right after you write the AI response text:
 
-    # Make sure we persist the current dataset & phase into the new session row
-    current_phase = 'analysis' if st.session_state.approved_df is not None else st.session_state.current_phase
-    persistence.save_session_state(
-        st.session_state.session_id,
-        original_df=st.session_state.original_df,
-        current_df=st.session_state.current_df,
-        approved_df=st.session_state.approved_df,
-        phase=current_phase
-    )
+# --- Show the generated / repaired Python code ---
+final_code = result.get('final_code')
+if final_code:
+    with st.expander("🔍 View Generated Python Code", expanded=False):
+        st.code(final_code, language="python")
 
-    st.success("New session created — kept current dataset & analysis mode, cleared chat history.")
-    st.rerun()
+
+This pulls the code from result['final_code'] (which your CodeExecutor.execute_analysis() already returns, including the repaired version when auto-repair was used).
+
+2) Save the code into analysis history (so it appears in “Previous Analysis”)
+
+Find this block (right after a successful result):
+
+st.session_state.analysis_history.append({
+    'query': analysis_query,
+    'code': None,  # keep code hidden per your preference
+    'result': result,
+    'intent': 'code',
+    'timestamp': pd.Timestamp.now()
+})
+
+
+Change it to:
+
+st.session_state.analysis_history.append({
+    'query': analysis_query,
+    'code': result.get('final_code'),  # <-- store code so history expander shows it
+    'result': result,
+    'intent': 'code',
+    'timestamp': pd.Timestamp.now()
+})
+
+
+Your “Previous Analysis Conversations” section already shows code when analysis['code'] exists, so this makes past runs display their script too.
