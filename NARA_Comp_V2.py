@@ -13,18 +13,15 @@ from datetime import datetime
 import uuid
 from persistence import ChatPersistence
 import streamlit_cookies_manager as cookies_manager
+from PIL import Image, ImageDraw, ImageFont
 
 # Needed by apply_manual_conversion_fallback
 import re
 import numpy as np
 
 # =========================================
-# Setup
+# Save cookies/session 
 # =========================================
-
-st.set_page_config(page_title="Natural Language AI for Reporting & Analysis (NARA)", layout="wide")
-st.title("🧠 Natural Language AI for Reporting & Analysis (NARA)")
-st.markdown("Upload a CSV file and ask questions to analyze your data. Use the inline **Data Types** tool (optional) to fix column types.")
 
 # Initialize cookies for browser storage with secure password from environment
 cookie_password = os.environ.get('COOKIE_SECRET_KEY', str(uuid.uuid4()))
@@ -136,7 +133,7 @@ latest_insight_list = [{"text": v["text"], "timestamp": v["timestamp"].isoformat
 insight_feedback_format = "  \n".join([f'{e["text"]} -> insight' for e in latest_insight_list])
 
 # =========================================
-# Utils
+# Utils/ Helper Functions
 # =========================================
 
 def apply_manual_conversion_fallback(df, column_name, target_dtype, sample_data):
@@ -217,15 +214,26 @@ def _should_show_table(user_query: str, df: pd.DataFrame) -> bool:
     return (df.shape[0] <= 200 and df.shape[1] <= 20)
 
 def _render_table(df: pd.DataFrame, key: str):
-    """Nice-looking Streamlit table with number formatting and hidden index."""
+    """Nice-looking Streamlit table with number formatting and hidden index.
+    Ensures index (e.g., Year) is visible as a column."""
     pretty = df.copy()
 
-    # Prefer common time columns first
-    preferred_order = [c for c in ["year", "month", "date"] if c in pretty.columns] + \
-                      [c for c in pretty.columns if c not in ["year", "month", "date"]]
-    pretty = pretty[preferred_order]
+    # 1) If the index is named or not a simple RangeIndex, bring it back as a column
+    if not isinstance(pretty.index, pd.RangeIndex) or getattr(pretty.index, "name", None):
+        pretty = pretty.reset_index()
 
-    # Ensure numeric formatting
+    # 2) Flatten any MultiIndex columns
+    if isinstance(pretty.columns, pd.MultiIndex):
+        pretty.columns = ["_".join([str(x) for x in tup if x != ""]) for tup in pretty.columns.values]
+
+    # 3) Case-insensitive preferred ordering (Year/Month/Date first if present)
+    cols = list(pretty.columns)
+    lower_map = {c.lower(): c for c in cols}
+    preferred = [lower_map[k] for k in ["year", "month", "date"] if k in lower_map]
+    rest = [c for c in cols if c not in preferred]
+    pretty = pretty[preferred + rest] if preferred else pretty
+
+    # 4) Ensure numeric formatting
     numeric_cols = pretty.select_dtypes(include=["number"]).columns.tolist()
     for c in numeric_cols:
         pretty[c] = pd.to_numeric(pretty[c], errors="coerce")
@@ -234,22 +242,27 @@ def _render_table(df: pd.DataFrame, key: str):
 
     st.dataframe(pretty, hide_index=True, use_container_width=True, column_config=col_cfg, key=key)
 
-# Always reload chat history for consistency
-if 'session_id' in st.session_state:
-    chat_history = persistence.get_chat_history(st.session_state.session_id)
-    st.session_state.chat_history = chat_history if chat_history else []
+def _parse_output_intent(user_query: str):
+    q = (user_query or "").lower()
+    wants_table = any(k in q for k in [
+        "table", "tabular", "as a table", "show table", "list out", "summary table",
+        "pivot", "cross-tab", "crosstab", "dataframe", "table format", "grid"
+    ])
+    wants_both  = any(k in q for k in [
+        "both", "table and chart", "chart and table", "show both"
+    ])
+    return wants_table, wants_both
 
-# Initialize session state
-if 'current_phase' not in st.session_state: st.session_state.current_phase = 'upload'  # 'upload' or 'analysis'
-if 'uploaded_files' not in st.session_state: st.session_state.uploaded_files = {}
-if 'selected_file' not in st.session_state: st.session_state.selected_file = None
-if 'original_df' not in st.session_state: st.session_state.original_df = None
-if 'current_df' not in st.session_state: st.session_state.current_df = None
-if 'approved_df' not in st.session_state: st.session_state.approved_df = None
-if 'analysis_history' not in st.session_state: st.session_state.analysis_history = []
-if 'chat_history' not in st.session_state: st.session_state.chat_history = []
-if 'unique_categories' not in st.session_state: st.session_state.unique_categories = {}
-if 'feedback_status' not in st.session_state: st.session_state.feedback_status = None
+def _render_chart_from_result(result: dict, key_prefix: str = "") -> bool:
+    """Render a chart if present; return True if one was rendered."""
+    if result.get('plotly_fig') is not None:
+        st.plotly_chart(result['plotly_fig'], use_container_width=True,
+                        key=f"{key_prefix}plotly_{int(pd.Timestamp.now().value)}")
+        return True
+    if result.get('plot') is not None:
+        st.pyplot(result['plot'])
+        return True
+    return False
 
 # --- helper: persist chat history uniformly ---
 def _save_chat_message(kind: str, text: str):
@@ -322,6 +335,35 @@ def run_with_retry(base_df, user_query, data_agent, code_executor, unique_catego
 
 # --- End Retry LLMs ---
 
+# =========================================
+# Streamit App Setup
+# =========================================
+
+st.set_page_config(page_title="Natural Language AI for Reporting & Analysis (NARA)", layout="wide")
+st.title("🧠 Natural Language AI for Reporting & Analysis (NARA)")
+st.markdown("Upload a CSV file and ask questions to analyze your data. Use the inline **Data Types** tool (optional) to fix column types.")
+
+# =========================================
+# Session State/Memory
+# =========================================
+
+# Always reload chat history for consistency
+if 'session_id' in st.session_state:
+    chat_history = persistence.get_chat_history(st.session_state.session_id)
+    st.session_state.chat_history = chat_history if chat_history else []
+
+# Initialize session state
+if 'current_phase' not in st.session_state: st.session_state.current_phase = 'upload'  # 'upload' or 'analysis'
+if 'uploaded_files' not in st.session_state: st.session_state.uploaded_files = {}
+if 'selected_file' not in st.session_state: st.session_state.selected_file = None
+if 'original_df' not in st.session_state: st.session_state.original_df = None
+if 'current_df' not in st.session_state: st.session_state.current_df = None
+if 'approved_df' not in st.session_state: st.session_state.approved_df = None
+if 'analysis_history' not in st.session_state: st.session_state.analysis_history = []
+if 'chat_history' not in st.session_state: st.session_state.chat_history = []
+if 'unique_categories' not in st.session_state: st.session_state.unique_categories = {}
+if 'feedback_status' not in st.session_state: st.session_state.feedback_status = None
+
 # Initialize agents
 data_agent = DataAgent()
 code_executor = CodeExecutor()
@@ -331,6 +373,9 @@ code_executor = CodeExecutor()
 # =========================================
 
 with st.sidebar:
+    # Display JNJ Logo
+    st.image(jnj_logo, width=300)
+
     st.header("📋 Workflow Status")
     phases = {
         'upload': '📁 Upload Data',
@@ -344,8 +389,6 @@ with st.sidebar:
         else:
             st.write(f"   {phase_name}")
     st.divider()
-
-    
 
 # =========================================
 # Main content
@@ -523,7 +566,18 @@ elif st.session_state.current_phase == 'analysis':
                 )
                 st.rerun()
 
-    st.header("📊 Data Analysis")
+    st.header("📊 Dataset Summary")
+
+    # ---------- Dataset info & table ----------
+    if st.session_state.approved_df is not None:
+        col1, col2, col3 = st.columns(3)
+        with col1: st.metric("Rows", len(st.session_state.approved_df))
+        with col2: st.metric("Columns", len(st.session_state.approved_df.columns))
+        with col3: st.metric("Analyses", len(st.session_state.analysis_history))
+
+    #st.subheader("📊 Working Dataset")
+    #st.info("This is the dataset used for all analyses. Fix types above if needed, then ask your question below.")
+    display_dataframe(st.session_state.approved_df, unique_key="approved")
 
     # ---------- Inline Data Types Modifications (on Analysis page) ----------
     st.subheader("🔧 Fix Column Data Types (Optional)")
@@ -642,19 +696,10 @@ elif st.session_state.current_phase == 'analysis':
                 else:
                     st.error("❌ Both default and AI-powered conversions failed")
 
-    # ---------- Dataset info & table ----------
-    if st.session_state.approved_df is not None:
-        col1, col2, col3 = st.columns(3)
-        with col1: st.metric("Rows", len(st.session_state.approved_df))
-        with col2: st.metric("Columns", len(st.session_state.approved_df.columns))
-        with col3: st.metric("Analyses", len(st.session_state.analysis_history))
-
-    st.subheader("📊 Working Dataset")
-    st.info("This is the dataset used for all analyses. Fix types above if needed, then ask your question below.")
-    display_dataframe(st.session_state.approved_df, unique_key="approved")
+    
 
     # ---------- Analysis chat ----------
-    st.subheader("🔍 Natural Language Data Analysis")
+    st.subheader("💬 AI Assistant for Interactive Data Insights")
 
     # ---- Show chat history (previous questions) ----
     if st.session_state.chat_history and len(st.session_state.chat_history) > 0:
@@ -773,40 +818,91 @@ elif st.session_state.current_phase == 'analysis':
                         else:
                             st.info("No written response was produced.")
 
-                        # --- Table handling (conditional) ---
+                        # --- Unified output chooser: show ONE primary output unless user asks for both ---
+                        wants_table, wants_both = _parse_output_intent(analysis_query)
+
+                        # Gather possible outputs
                         df_out = result.get('dataframe')
                         if df_out is None:
                             df_out = _normalize_to_dataframe(result.get('result'))
 
-                        if df_out is not None:
-                            if _should_show_table(analysis_query, df_out):
+                        has_table = df_out is not None
+                        has_chart = (result.get('plotly_fig') is not None) or (result.get('plot') is not None)
+
+                        # Decide what to show
+                        if wants_both and (has_table or has_chart):
+                            # Show both (table first), only when explicitly requested
+                            if has_table:
                                 st.subheader("📋 Table")
-                                _render_table(df_out, key=f"analysis_result_{len(st.session_state.analysis_history)}")
-                            else:
-                                # Keep it lightweight in the UI but make it available
-                                with st.expander("📋 Table available (preview first rows)"):
-                                    _render_table(df_out.head(20), key=f"analysis_result_preview_{len(st.session_state.analysis_history)}")
-                                # Optional: download link if you want to allow export
-                                try:
-                                    csv_bytes = df_out.to_csv(index=False).encode("utf-8")
-                                    st.download_button(
-                                        "Download full table as CSV",
-                                        data=csv_bytes,
-                                        file_name="analysis_result.csv",
-                                        mime="text/csv",
-                                        key=f"dl_{len(st.session_state.analysis_history)}"
-                                    )
-                                except Exception:
-                                    pass
-                        # 2) Visualization (if any)
-                        # Prefer Plotly; otherwise show Matplotlib/Seaborn
-                        if result.get('plotly_fig') is not None:
-                            st.plotly_chart(result['plotly_fig'], use_container_width=True, key=f"analysis_chart_{int(pd.Timestamp.now().value)}")
-                        elif result.get('plot') is not None:
-                            st.pyplot(result['plot'])
+                                # full table only if it's small or explicitly asked; otherwise preview + download
+                                if _should_show_table(analysis_query, df_out):
+                                    _render_table(df_out, key=f"analysis_result_{len(st.session_state.analysis_history)}")
+                                else:
+                                    with st.expander("📋 Table available (preview first rows)"):
+                                        _render_table(df_out.head(20), key=f"analysis_result_preview_{len(st.session_state.analysis_history)}")
+                                    try:
+                                        csv_bytes = df_out.to_csv(index=False).encode("utf-8")
+                                        st.download_button(
+                                            "Download full table as CSV",
+                                            data=csv_bytes,
+                                            file_name="analysis_result.csv",
+                                            mime="text/csv",
+                                            key=f"dl_{len(st.session_state.analysis_history)}"
+                                        )
+                                    except Exception:
+                                        pass
+
+                            if has_chart:
+                                st.subheader("📈 Chart")
+                                _render_chart_from_result(result, key_prefix=f"analysis_chart_")
+
+                        else:
+                            # Show a single primary output
+                            if wants_table and has_table:
+                                st.subheader("📋 Table")
+                                if _should_show_table(analysis_query, df_out):
+                                    _render_table(df_out, key=f"analysis_result_{len(st.session_state.analysis_history)}")
+                                else:
+                                    with st.expander("📋 Table available (preview first rows)"):
+                                        _render_table(df_out.head(20), key=f"analysis_result_preview_{len(st.session_state.analysis_history)}")
+                                    try:
+                                        csv_bytes = df_out.to_csv(index=False).encode("utf-8")
+                                        st.download_button(
+                                            "Download full table as CSV",
+                                            data=csv_bytes,
+                                            file_name="analysis_result.csv",
+                                            mime="text/csv",
+                                            key=f"dl_{len(st.session_state.analysis_history)}"
+                                        )
+                                    except Exception:
+                                        pass
+
+                            elif has_chart:
+                                st.subheader("📈 Chart")
+                                _render_chart_from_result(result, key_prefix=f"analysis_chart_")
+
+                            elif has_table:
+                                # No chart but we do have a table → show it
+                                st.subheader("📋 Table")
+                                if _should_show_table(analysis_query, df_out):
+                                    _render_table(df_out, key=f"analysis_result_{len(st.session_state.analysis_history)}")
+                                else:
+                                    with st.expander("📋 Table available (preview first rows)"):
+                                        _render_table(df_out.head(20), key=f"analysis_result_preview_{len(st.session_state.analysis_history)}")
+                                    try:
+                                        csv_bytes = df_out.to_csv(index=False).encode("utf-8")
+                                        st.download_button(
+                                            "Download full table as CSV",
+                                            data=csv_bytes,
+                                            file_name="analysis_result.csv",
+                                            mime="text/csv",
+                                            key=f"dl_{len(st.session_state.analysis_history)}"
+                                        )
+                                    except Exception:
+                                        pass
 
                     else:
-                        st.error("❌ Analysis failed after automatic repair attempts.")
+                        st.error("❌ Analysis failed after automatic repair attempts for 3 times. Please try rephrasing your request")
                         # Optional, for debugging:
                         # st.caption(result.get('error', ''))
             except Exception as e:
