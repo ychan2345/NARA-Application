@@ -1,42 +1,27 @@
-1) Strengthen the self-repair prompt (so repaired code always surfaces scalars)
-
-Where: Inside run_code_with_self_repair(...), find the big fix_prompt = f"""... block.
-Edit: Replace the trailing “Rules:” section with this version (add the OUTPUT REQUIREMENTS):
-
-        fix_prompt = f"""You wrote Python code for this data analysis task and it errored on attempt {attempt + 1}/{max_tries}. Fix it and return ONLY the corrected code.
-
-Task: {query}
-Current Error: {obs['errors']}
-Current code:
-{current_code}
-
-Previous repair attempts: {len(repair_history)}
-{chr(10).join([f"Attempt {h['attempt']}: {h['error']}" for h in repair_history[-2:]]) if len(repair_history) > 0 else ""}
-
-RULES (MUST FOLLOW EXACTLY):
-- Use only variables/libraries already in the environment: df, pd, px, np, stats, go, make_subplots, sns, plt.
-- Do not call .show().
-- Assign ANY final answer (scalar, Series, or DataFrame) to a variable named result.
-- Also print(result) so stdout contains the answer.
-- Scalars are VALID final outputs. Do NOT wrap scalars in a DataFrame.
-- For distinct counts, use: df[col].nunique(dropna=True).
-- For mean/median/std on non-numeric columns, coerce first:
-    s = pd.to_numeric(df[col], errors="coerce")
-    result = float(s.mean())   # or s.median(), s.std()
-- Use exact column names from the dataset.
-"""
-
-
-Why this helps: even when the “average/median/distinct” code evaluates to a scalar, the repaired snippet will set result and also print(result). Your executor already treats stdout/result as success, so the self-repair loop will stop retrying.
-
-2) Make sure you actually instantiate the client for repair calls
-
-Right now, in run_code_with_self_repair, you call client.invoke(messages) but there’s no client = get_openai_client() in that function scope. Add this line right before you build/send messages:
-
-        try:
-            messages = [HumanMessage(content=fix_prompt)]
-            client = get_openai_client()  # ← ADD THIS
-            response = client.invoke(messages)
-
-
-(Without that, the repair step can fail for reasons unrelated to your analysis code.)
+@staticmethod
+def _find_table_in_namespace(ns):
+    import pandas as pd, types
+    candidates = []
+    SKIP = {'df','pd','np','plt','px','go','ff','make_subplots','stats',
+            'analysis_summary','plotly_fig','fig','result','result_df','results','__builtins__'}
+    for k, v in ns.items():
+        if k in SKIP or str(k).startswith('__') or isinstance(v, types.ModuleType):
+            continue
+        if isinstance(v, pd.DataFrame):
+            candidates.append((k, v)); continue
+        if hasattr(v, 'to_frame') and callable(getattr(v, 'to_frame', None)):
+            try: candidates.append((k, v.to_frame())); continue
+            except Exception: pass
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            try:
+                candidates.append((k, pd.DataFrame(v))); continue
+            except Exception: pass
+        if isinstance(v, dict):
+            try:
+                df = pd.DataFrame(v)
+                if df.shape[0] >= 1 and df.shape[1] >= 1:
+                    candidates.append((k, df))
+            except Exception: pass
+    if not candidates: return None
+    _, best = max(candidates, key=lambda kv: kv[1].shape[0] * kv[1].shape[1])
+    return best
