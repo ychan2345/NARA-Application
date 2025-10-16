@@ -170,6 +170,7 @@ Rules:
 
         try:
             messages = [HumanMessage(content=fix_prompt)]
+            client = get_openai_client()
             response = client.invoke(messages)
             
             fixer = response.choices[0].message.content
