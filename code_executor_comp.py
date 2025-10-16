@@ -187,6 +187,16 @@ class CodeExecutor:
                             result['dataframe'] = obs.get('result')
                         elif isinstance(obs.get('result'), dict):
                             result['text_output'] = str(obs.get('result'))
+                        elif isinstance(obs.get('result'), (int, float, str, bool)) or np.isscalar(obs.get('result')):
+                            scalar_val = obs.get('result')
+                            # show as text
+                            result['text_output'] = str(scalar_val)
+                            # and also as a tiny table so the UI can render it if needed
+                            try:
+                                import pandas as pd
+                                result['dataframe'] = pd.DataFrame({'value': [scalar_val]})
+                            except Exception:
+                                pass
 
                     if result.get('dataframe') is None:
                         table = _find_table_in_namespace(exec_env)
@@ -246,6 +256,16 @@ class CodeExecutor:
             printed_output = stdout_capture.getvalue().strip()
             if printed_output:
                 result['text_output'] = printed_output
+                
+            if not result['text_output']:
+                r = exec_env.get('result')
+                if r is not None and (isinstance(r, (int, float, str, bool)) or np.isscalar(r)):
+                    result['text_output'] = str(r)
+                    try:
+                        import pandas as pd
+                        result['dataframe'] = pd.DataFrame({'value': [r]})
+                    except Exception:
+                        pass
 
             return result
 
