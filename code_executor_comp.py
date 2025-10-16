@@ -199,7 +199,7 @@ class CodeExecutor:
                                 pass
 
                     if result.get('dataframe') is None:
-                        table = _find_table_in_namespace(exec_env)
+                        table = CodeExecutor._find_table_in_namespace(exec_env)
                         if table is not None:
                             result['dataframe'] = table
 
@@ -237,7 +237,7 @@ class CodeExecutor:
                 result['dataframe'] = exec_env.get('result')
             
             if result.get('dataframe') is None:
-                table = _find_table_in_namespace(exec_env)
+                table = CodeExecutor._find_table_in_namespace(exec_env)
                 if table is not None:
                     result['dataframe'] = table
 
@@ -334,6 +334,7 @@ class CodeExecutor:
         
         return '\n'.join(cleaned_lines)
 
+    @staticmethod
     def _find_table_in_namespace(ns):
         """Heuristically find a table-like object in an exec namespace."""
         import pandas as pd  # safe if not at top
