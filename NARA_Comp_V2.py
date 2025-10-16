@@ -20,6 +20,23 @@ import re
 import numpy as np
 
 # =========================================
+# Import Images/Files (Dataiku)
+# =========================================
+
+# Read recipe inputs
+Images = dataiku.Folder("pyKiKvku")
+Images_info = Images.get_info()
+
+logo_file_name = "medtech_icon.png"
+logo_local_path = os.path.join("/tmp", logo_file_name)
+
+with Images.get_download_stream(logo_file_name) as stream:
+    with open(logo_local_path, "wb") as out_file:
+        out_file.write(stream.read())
+
+jnj_logo = Image.open(logo_local_path)
+
+# =========================================
 # Save cookies/session 
 # =========================================
 
@@ -791,7 +808,8 @@ elif st.session_state.current_phase == 'analysis':
                         max_attempts=3
                     )
 
-                    if result and result.get('ok'):
+                    #if result and result.get('ok'):
+                    if result:
                         st.session_state.analysis_history.append({
                             'query': analysis_query,
                             'code': None,  # keep code hidden per your preference
